@@ -1,0 +1,565 @@
+// Tontine Prospera — Prisma schema
+// UUID v7 generated on device for offline rows, server for server-created rows.
+// Money = integer FCFA. Timestamps = timestamptz. No floats for money.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & Auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  role         Role
+  firstName    String    @map("first_name")
+  lastName     String    @map("last_name")
+  phone        String    @unique
+  email        String?   @unique
+  passwordHash String?   @map("password_hash")
+  pinHash      String?   @map("pin_hash")
+  photoUrl     String?   @map("photo_url")
+  zoneId       String?   @map("zone_id") @db.Uuid
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  zone Zone? @relation(fields: [zoneId], references: [id])
+
+  devices                Device[]           @relation("DeviceUser")
+  approvedDevices        Device[]           @relation("DeviceApprover")
+  refreshTokens          RefreshToken[]
+  collectorClients       Client[]           @relation("CollectorClients")
+  registeredClients      Client[]           @relation("RegisteredBy")
+  assignedFromHistory    ClientAssignment[] @relation("FromCollector")
+  assignedToHistory      ClientAssignment[] @relation("ToCollector")
+  assignmentChangedBy    ClientAssignment[] @relation("ChangedBy")
+  collections            Collection[]
+  voidRequestsMade       VoidRequest[]      @relation("RequestedBy")
+  voidRequestsDecided    VoidRequest[]      @relation("DecidedBy")
+  handoversCashier       CashHandover[]     @relation("CashierHandovers")
+  handoversController    CashHandover[]     @relation("ControllerHandovers")
+  handoversCollector     CashHandover[]     @relation("CollectorHandovers")
+  payouts                Payout[]
+  spotChecksAsCollector  SpotCheck[]        @relation("SpotCheckCollector")
+  spotChecksAsController SpotCheck[]        @relation("SpotCheckController")
+  alertsByCollector      Alert[]            @relation("AlertCollector")
+  alertsResolved         Alert[]            @relation("AlertResolver")
+  auditLogs              AuditLog[]
+  stickerBatchesCreated  StickerBatch[]
+  settingsUpdated        Setting[]
+
+  @@map("users")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  CONTROLLER
+  CASHIER
+  COLLECTOR
+}
+
+model Device {
+  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                String       @map("user_id") @db.Uuid
+  androidId             String       @map("android_id")
+  model                 String
+  appVersion            String       @map("app_version")
+  status                DeviceStatus
+  lastSyncAt            DateTime?    @map("last_sync_at") @db.Timestamptz
+  unsyncedCountReported Int          @default(0) @map("unsynced_count_reported")
+  approvedBy            String?      @map("approved_by") @db.Uuid
+  approvedAt            DateTime?    @map("approved_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user           User         @relation("DeviceUser", fields: [userId], references: [id])
+  approvedByUser User?        @relation("DeviceApprover", fields: [approvedBy], references: [id])
+  collections    Collection[]
+
+  @@map("devices")
+}
+
+enum DeviceStatus {
+  PENDING
+  APPROVED
+  REVOKED
+}
+
+model RefreshToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  deviceId  String?   @map("device_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("refresh_tokens")
+}
+
+model Zone {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String  @unique
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  users   User[]
+  clients Client[]
+
+  @@map("zones")
+}
+
+// ---------------------------------------------------------------------------
+// Carnet Stickers
+// ---------------------------------------------------------------------------
+
+model StickerBatch {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fromNumber  Int      @map("from_number")
+  toNumber    Int      @map("to_number")
+  printedAt   DateTime @map("printed_at") @db.Timestamptz
+  createdById String   @map("created_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy User            @relation(fields: [createdById], references: [id])
+  stickers  CarnetSticker[]
+
+  @@map("sticker_batches")
+}
+
+model CarnetSticker {
+  carnetNumber        String        @id @map("carnet_number")
+  batchId             String        @map("batch_id") @db.Uuid
+  assignedCollectorId String?       @map("assigned_collector_id") @db.Uuid
+  usedByClientId      String?       @map("used_by_client_id") @db.Uuid
+  status              StickerStatus
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  batch  StickerBatch @relation(fields: [batchId], references: [id])
+  client Client?
+
+  @@map("carnet_stickers")
+}
+
+enum StickerStatus {
+  AVAILABLE
+  ASSIGNED
+  USED
+  LOST
+  VOID
+}
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+
+model Client {
+  id            String       @id @db.Uuid
+  carnetNumber  String       @unique @map("carnet_number")
+  firstName     String       @map("first_name")
+  lastName      String       @map("last_name")
+  phone         String
+  phoneAlt      String?      @map("phone_alt")
+  gender        String?
+  activity      String?
+  addressText   String       @map("address_text")
+  landmark      String?
+  latitude      Float
+  longitude     Float
+  gpsAccuracyM  Float        @map("gps_accuracy_m")
+  zoneId        String?      @map("zone_id") @db.Uuid
+  photoUrl      String?      @map("photo_url")
+  placePhotoUrl String?      @map("place_photo_url")
+  collectorId   String       @map("collector_id") @db.Uuid
+  registeredById String      @map("registered_by") @db.Uuid
+  registeredAt  DateTime     @map("registered_at") @db.Timestamptz
+  status        ClientStatus
+  smsOptOut     Boolean      @default(false) @map("sms_opt_out")
+  notes         String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  carnetSticker CarnetSticker  @relation(fields: [carnetNumber], references: [carnetNumber])
+  collector     User           @relation("CollectorClients", fields: [collectorId], references: [id])
+  registeredBy  User           @relation("RegisteredBy", fields: [registeredById], references: [id])
+  zone          Zone?          @relation(fields: [zoneId], references: [id])
+
+  assignments ClientAssignment[]
+  cycles      Cycle[]
+  collections Collection[]
+  smsOutbox   SmsOutbox[]
+  spotChecks  SpotCheck[]
+  alerts      Alert[]           @relation("AlertClient")
+
+  @@index([collectorId])
+  @@index([zoneId])
+  @@map("clients")
+}
+
+enum ClientStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+model ClientAssignment {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId        String   @map("client_id") @db.Uuid
+  fromCollectorId String?  @map("from_collector_id") @db.Uuid
+  toCollectorId   String   @map("to_collector_id") @db.Uuid
+  changedById     String   @map("changed_by") @db.Uuid
+  reason          String
+  changedAt       DateTime @map("changed_at") @db.Timestamptz
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  client        Client @relation(fields: [clientId], references: [id])
+  fromCollector User?  @relation("FromCollector", fields: [fromCollectorId], references: [id])
+  toCollector   User   @relation("ToCollector", fields: [toCollectorId], references: [id])
+  changedBy     User   @relation("ChangedBy", fields: [changedById], references: [id])
+
+  @@map("client_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// Cycles
+// ---------------------------------------------------------------------------
+
+model Cycle {
+  id              String      @id @db.Uuid
+  clientId        String      @map("client_id") @db.Uuid
+  cycleSequence   Int         @map("cycle_sequence")
+  startDate       DateTime    @map("start_date") @db.Date
+  endDate         DateTime    @map("end_date") @db.Date
+  stakeAmount     Int         @map("stake_amount")
+  maxBoxes        Int         @default(31) @map("max_boxes")
+  status          CycleStatus
+  totalPaid       Int         @default(0) @map("total_paid")
+  boxesFilled     Int         @default(0) @map("boxes_filled")
+  commissionAmount Int?       @map("commission_amount")
+  netToPay        Int?        @map("net_to_pay")
+  closedAt        DateTime?   @map("closed_at") @db.Timestamptz
+  cancelledReason String?     @map("cancelled_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  client      Client       @relation(fields: [clientId], references: [id])
+  collections Collection[]
+  payout      Payout?
+  spotChecks  SpotCheck[]
+
+  @@map("cycles")
+}
+
+enum CycleStatus {
+  OPEN
+  CLOSED
+  PAID
+  CANCELLED
+}
+
+// ---------------------------------------------------------------------------
+// Collections (append-only)
+// ---------------------------------------------------------------------------
+
+model Collection {
+  id                  String    @id @db.Uuid
+  clientId            String    @map("client_id") @db.Uuid
+  cycleId             String    @map("cycle_id") @db.Uuid
+  collectorId         String    @map("collector_id") @db.Uuid
+  deviceId            String    @map("device_id") @db.Uuid
+  amount              Int
+  stakeCount          Decimal   @map("stake_count") @db.Decimal(5, 2)
+  isAppoint           Boolean   @default(false) @map("is_appoint")
+  collectedAt         DateTime  @map("collected_at") @db.Timestamptz
+  businessDate        DateTime  @map("business_date") @db.Date
+  receivedAt          DateTime  @default(now()) @map("received_at") @db.Timestamptz
+  latitude            Float?
+  longitude           Float?
+  gpsAccuracyM        Float?    @map("gps_accuracy_m")
+  distanceFromClientM Float?    @map("distance_from_client_m")
+  flags               String[]  @default([])
+  handoverId          String?   @map("handover_id") @db.Uuid
+  voidedAt            DateTime? @map("voided_at") @db.Timestamptz
+  voidedById          String?   @map("voided_by") @db.Uuid
+  voidReason          String?   @map("void_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  client      Client        @relation(fields: [clientId], references: [id])
+  cycle       Cycle         @relation(fields: [cycleId], references: [id])
+  collector   User          @relation(fields: [collectorId], references: [id])
+  device      Device        @relation(fields: [deviceId], references: [id])
+  handover    CashHandover? @relation(fields: [handoverId], references: [id])
+
+  voidRequests VoidRequest[]
+  alerts       Alert[]       @relation("AlertCollection")
+
+  @@index([collectorId, businessDate])
+  @@index([clientId, collectedAt(sort: Desc)])
+  @@map("collections")
+}
+
+// ---------------------------------------------------------------------------
+// Void Requests
+// ---------------------------------------------------------------------------
+
+model VoidRequest {
+  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  collectionId  String            @map("collection_id") @db.Uuid
+  requestedById String            @map("requested_by") @db.Uuid
+  reason        String
+  status        VoidRequestStatus
+  decidedById   String?           @map("decided_by") @db.Uuid
+  decidedAt     DateTime?         @map("decided_at") @db.Timestamptz
+  decisionNote  String?           @map("decision_note")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  collection  Collection @relation(fields: [collectionId], references: [id])
+  requestedBy User       @relation("RequestedBy", fields: [requestedById], references: [id])
+  decidedBy   User?      @relation("DecidedBy", fields: [decidedById], references: [id])
+
+  @@map("void_requests")
+}
+
+enum VoidRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// Cash Handovers
+// ---------------------------------------------------------------------------
+
+model CashHandover {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  collectorId      String         @map("collector_id") @db.Uuid
+  businessDate     DateTime       @map("business_date") @db.Date
+  expectedAmount   Int            @map("expected_amount")
+  receivedAmount   Int?           @map("received_amount")
+  difference       Int?
+  collectionsCount Int            @map("collections_count")
+  status           HandoverStatus
+  cashierId        String?        @map("cashier_id") @db.Uuid
+  confirmedAt      DateTime?      @map("confirmed_at") @db.Timestamptz
+  controllerId     String?        @map("controller_id") @db.Uuid
+  validatedAt      DateTime?      @map("validated_at") @db.Timestamptz
+  notes            String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  collector   User         @relation("CollectorHandovers", fields: [collectorId], references: [id])
+  cashier     User?        @relation("CashierHandovers", fields: [cashierId], references: [id])
+  controller  User?        @relation("ControllerHandovers", fields: [controllerId], references: [id])
+  collections Collection[]
+  alerts      Alert[]      @relation("AlertHandover")
+
+  @@unique([collectorId, businessDate])
+  @@map("cash_handovers")
+}
+
+enum HandoverStatus {
+  OPEN
+  CONFIRMED
+  VALIDATED
+}
+
+// ---------------------------------------------------------------------------
+// Payouts
+// ---------------------------------------------------------------------------
+
+model Payout {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cycleId          String   @unique @map("cycle_id") @db.Uuid
+  clientId         String   @map("client_id") @db.Uuid
+  totalPaid        Int      @map("total_paid")
+  commissionAmount Int      @map("commission_amount")
+  netPaid          Int      @map("net_paid")
+  isEarly          Boolean  @default(false) @map("is_early")
+  earlyReason      String?  @map("early_reason")
+  carnetVerified   Boolean  @map("carnet_verified")
+  cashierId        String   @map("cashier_id") @db.Uuid
+  paidAt           DateTime @map("paid_at") @db.Timestamptz
+  notes            String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  cycle   Cycle @relation(fields: [cycleId], references: [id])
+  cashier User  @relation(fields: [cashierId], references: [id])
+
+  @@map("payouts")
+}
+
+// ---------------------------------------------------------------------------
+// Controls & Alerts
+// ---------------------------------------------------------------------------
+
+model Alert {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type           String
+  severity       AlertSeverity
+  collectorId    String?       @map("collector_id") @db.Uuid
+  clientId       String?       @map("client_id") @db.Uuid
+  collectionId   String?       @map("collection_id") @db.Uuid
+  handoverId     String?       @map("handover_id") @db.Uuid
+  message        String
+  status         AlertStatus
+  resolvedById   String?       @map("resolved_by") @db.Uuid
+  resolvedAt     DateTime?     @map("resolved_at") @db.Timestamptz
+  resolutionNote String?       @map("resolution_note")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  collector  User?         @relation("AlertCollector", fields: [collectorId], references: [id])
+  client     Client?       @relation("AlertClient", fields: [clientId], references: [id])
+  collection Collection?   @relation("AlertCollection", fields: [collectionId], references: [id])
+  handover   CashHandover? @relation("AlertHandover", fields: [handoverId], references: [id])
+  resolvedBy User?         @relation("AlertResolver", fields: [resolvedById], references: [id])
+
+  @@index([status, type])
+  @@map("alerts")
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model SpotCheck {
+  id           String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId     String           @map("client_id") @db.Uuid
+  collectorId  String           @map("collector_id") @db.Uuid
+  controllerId String           @map("controller_id") @db.Uuid
+  cycleId      String           @map("cycle_id") @db.Uuid
+  weekStart    DateTime         @map("week_start") @db.Date
+  systemTotal  Int              @map("system_total")
+  carnetTotal  Int?             @map("carnet_total")
+  result       SpotCheckResult?
+  photoUrl     String?          @map("photo_url")
+  checkedAt    DateTime?        @map("checked_at") @db.Timestamptz
+  notes        String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  client     Client @relation(fields: [clientId], references: [id])
+  collector  User   @relation("SpotCheckCollector", fields: [collectorId], references: [id])
+  controller User   @relation("SpotCheckController", fields: [controllerId], references: [id])
+  cycle      Cycle  @relation(fields: [cycleId], references: [id])
+
+  @@map("spot_checks")
+}
+
+enum SpotCheckResult {
+  MATCH
+  MISMATCH
+  CLIENT_ABSENT
+}
+
+// ---------------------------------------------------------------------------
+// SMS
+// ---------------------------------------------------------------------------
+
+model SmsOutbox {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId          String?   @map("client_id") @db.Uuid
+  phone             String
+  template          String
+  body              String
+  status            SmsStatus
+  providerMessageId String?   @map("provider_message_id")
+  attempts          Int       @default(0)
+  lastError         String?   @map("last_error")
+  sentAt            DateTime? @map("sent_at") @db.Timestamptz
+  costXof           Int?      @map("cost_xof")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([status])
+  @@map("sms_outbox")
+}
+
+enum SmsStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Audit Log (append-only)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  actorId   String?  @map("actor_id") @db.Uuid
+  actorRole String?  @map("actor_role")
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id") @db.Uuid
+  before    Json?
+  after     Json?
+  ip        String?
+  deviceId  String?  @map("device_id") @db.Uuid
+  at        DateTime @default(now()) @db.Timestamptz
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+model Setting {
+  key         String   @id
+  value       Json
+  updatedById String   @map("updated_by") @db.Uuid
+  updatedAt   DateTime @map("updated_at") @db.Timestamptz
+
+  updatedBy User @relation(fields: [updatedById], references: [id])
+
+  @@map("settings")
+}
