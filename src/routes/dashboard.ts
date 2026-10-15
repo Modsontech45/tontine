@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma'
-import { requireAuth } from '../middleware/auth'
+import { requireRoles } from '../middleware/auth'
 
 export async function dashboardRoutes(app: FastifyInstance) {
-  app.get('/dashboard/admin', { preHandler: requireAuth(['SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'CASHIER']) }, async () => {
+  app.get('/dashboard/admin', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'CASHIER') }, async () => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1)
