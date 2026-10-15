@@ -12,6 +12,7 @@
     "db:studio": "prisma studio",
     "db:push": "prisma db push",
     "seed": "tsx src/seed.ts",
+    "seed:fat": "tsx src/seed-fat.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

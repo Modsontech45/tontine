@@ -18,6 +18,7 @@ import { cycleRoutes } from './routes/cycles'
 import { syncRoutes } from './routes/sync'
 import { collectionRoutes } from './routes/collections'
 import { voidRequestRoutes } from './routes/voidRequests'
+import { dashboardRoutes } from './routes/dashboard'
 import { AppError } from './lib/errors'
 import { prisma } from './lib/prisma'
 
@@ -60,6 +61,7 @@ async function build() {
     await v1.register(syncRoutes)
     await v1.register(collectionRoutes)
     await v1.register(voidRequestRoutes)
+    await v1.register(dashboardRoutes)
   }, { prefix: '/v1' })
 
   return app
