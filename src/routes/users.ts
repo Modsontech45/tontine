@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma'
 import { requireRoles } from '../middleware/auth'
 import { notFound, forbidden } from '../lib/errors'
 import { writeAudit } from '../lib/audit'
+import { sendWelcomeEmail } from '../lib/email'
 
 const createUserSchema = z.object({
   role: z.nativeEnum(Role),
@@ -67,6 +68,11 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     })
 
     await writeAudit({ actorId: req.actor?.userId, actorRole: req.actor?.role, action: 'CREATE', entity: 'users', entityId: user.id, after: user, ip: req.ip })
+
+    if (email && process.env.RESEND_API_KEY) {
+      sendWelcomeEmail({ to: email, firstName: first_name, lastName: last_name, role, phone, password, pin }).catch(() => {})
+    }
+
     return reply.code(201).send(user)
   })
 
@@ -93,6 +99,21 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'UPDATE', entity: 'users', entityId: id, before: existing, after: updated, ip: req.ip })
     return reply.send(updated)
+  })
+
+  app.post('/users/:id/reset-pin', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = z.object({ pin: z.string().length(6).regex(/^\d+$/) }).safeParse(req.body)
+    if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
+
+    const user = await prisma.user.findUnique({ where: { id } })
+    if (!user) return reply.code(404).send({ error: notFound('User', id) })
+    if (user.role !== 'COLLECTOR') return reply.code(400).send({ error: { code: 'INVALID_OPERATION', message: 'Réinitialisation du PIN réservée aux collecteurs' } })
+
+    const pinHash = await argon2.hash(body.data.pin)
+    await prisma.user.update({ where: { id }, data: { pinHash } })
+    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'RESET_PIN', entity: 'users', entityId: id, ip: req.ip })
+    return reply.code(204).send()
   })
 
   app.post('/users/:id/deactivate', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN') }, async (req, reply) => {

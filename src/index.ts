@@ -20,6 +20,8 @@ import { collectionRoutes } from './routes/collections'
 import { voidRequestRoutes } from './routes/voidRequests'
 import { dashboardRoutes } from './routes/dashboard'
 import { handoverRoutes } from './routes/handovers'
+import { otpRoutes } from './routes/otp'
+import { startDailySummaryJob } from './jobs/daily-summary'
 import { AppError } from './lib/errors'
 import { prisma } from './lib/prisma'
 
@@ -64,6 +66,7 @@ async function build() {
     await v1.register(voidRequestRoutes)
     await v1.register(dashboardRoutes)
     await v1.register(handoverRoutes)
+    await v1.register(otpRoutes)
   }, { prefix: '/v1' })
 
   return app
@@ -73,6 +76,7 @@ async function start() {
   const app = await build()
   try {
     await app.listen({ port: env.PORT, host: env.HOST })
+    startDailySummaryJob()
   } catch (err) {
     app.log.error(err)
     await prisma.$disconnect()

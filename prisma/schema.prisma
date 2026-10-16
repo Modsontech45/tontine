@@ -56,6 +56,7 @@ model User {
   auditLogs              AuditLog[]
   stickerBatchesCreated  StickerBatch[]
   settingsUpdated        Setting[]
+  otpCodes               OtpCode[]
 
   @@map("users")
 }
@@ -562,4 +563,22 @@ model Setting {
   updatedBy User @relation(fields: [updatedById], references: [id])
 
   @@map("settings")
+}
+
+// ---------------------------------------------------------------------------
+// OTP Codes (email verification for secure operations)
+// ---------------------------------------------------------------------------
+
+model OtpCode {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  code      String
+  purpose   String
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("otp_codes")
 }

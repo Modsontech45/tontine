@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma'
 import { unauthorized, AppError } from '../lib/errors'
 import { writeAudit } from '../lib/audit'
 import { createHash, randomBytes } from 'crypto'
+import { requestOtp, verifyOtp } from '../lib/otp'
 
 const webLoginSchema = z.object({
   phone: z.string().optional(),
@@ -216,6 +217,50 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     await prisma.user.update({ where: { id: user.id }, data: { pinHash: newHash } })
     await writeAudit({ actorId: user.id, actorRole: user.role, action: 'CHANGE_PIN', entity: 'users', entityId: user.id, ip: req.ip })
     return reply.code(204).send()
+  })
+
+  app.post('/auth/forgot-password', async (req, reply) => {
+    const body = z.object({ email: z.string().email() }).safeParse(req.body)
+    if (!body.success) return reply.send({ sent: true })
+
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: body.data.email, mode: 'insensitive' }, isActive: true },
+    })
+
+    if (user && user.role !== 'COLLECTOR' && user.email) {
+      requestOtp(user.id, 'RESET_PASSWORD').catch(() => {})
+    }
+
+    return reply.send({ sent: true })
+  })
+
+  app.post('/auth/reset-password', async (req, reply) => {
+    const body = z.object({
+      email: z.string().email(),
+      otp_code: z.string().length(6).regex(/^\d+$/),
+      new_password: z.string().min(8),
+    }).safeParse(req.body)
+    if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
+
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: body.data.email, mode: 'insensitive' }, isActive: true },
+    })
+
+    if (!user) {
+      return reply.code(422).send({ error: { code: 'INVALID_OTP', message: 'Code invalide ou expiré.' } })
+    }
+
+    const valid = await verifyOtp(user.id, 'RESET_PASSWORD', body.data.otp_code)
+    if (!valid) {
+      return reply.code(422).send({ error: { code: 'INVALID_OTP', message: 'Code invalide ou expiré.' } })
+    }
+
+    const passwordHash = await argon2.hash(body.data.new_password)
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } })
+    await prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } })
+    await writeAudit({ actorId: user.id, actorRole: user.role, action: 'RESET_PASSWORD', entity: 'users', entityId: user.id, ip: req.ip })
+
+    return reply.send({ success: true })
   })
 
   app.post('/auth/change-password', async (req, reply) => {

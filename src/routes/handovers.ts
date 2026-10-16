@@ -3,12 +3,15 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma'
 import { requireRoles } from '../middleware/auth'
 import { writeAudit } from '../lib/audit'
+import { sendHandoverAlert } from '../lib/email'
+import { verifyOtp } from '../lib/otp'
 
 const confirmSchema = z.object({
   collector_id: z.string().uuid(),
   business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   received_amount: z.number().int().min(0),
   notes: z.string().optional(),
+  otp_code: z.string().length(6).optional(),
 })
 
 export async function handoverRoutes(app: FastifyInstance) {
@@ -99,7 +102,13 @@ export async function handoverRoutes(app: FastifyInstance) {
     const body = confirmSchema.safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
 
-    const { collector_id, business_date, received_amount, notes } = body.data
+    const { collector_id, business_date, received_amount, notes, otp_code } = body.data
+
+    if (otp_code) {
+      const valid = await verifyOtp(req.actor.userId, 'CONFIRM_HANDOVER', otp_code)
+      if (!valid) return reply.code(422).send({ error: { code: 'INVALID_OTP', message: 'Code OTP invalide ou expiré.' } })
+    }
+
     const date = new Date(business_date)
     const nextDay = new Date(date); nextDay.setDate(nextDay.getDate() + 1)
 
@@ -171,6 +180,16 @@ export async function handoverRoutes(app: FastifyInstance) {
       after: { collectorId: collector_id, businessDate: business_date, expectedAmount, receivedAmount: received_amount, difference },
       ip: req.ip,
     })
+
+    sendHandoverAlert({
+      collectorName: `${handover.collector.firstName} ${handover.collector.lastName}`,
+      businessDate: business_date,
+      expectedAmount,
+      receivedAmount: received_amount,
+      difference,
+      cashierName: `${handover.cashier?.firstName ?? ''} ${handover.cashier?.lastName ?? ''}`.trim(),
+      confirmedAt: new Date(),
+    }).catch(() => {})
 
     return reply.code(201).send(handover)
   })
