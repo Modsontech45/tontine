@@ -1,10 +1,11 @@
 import { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import QRCode from 'qrcode'
 import { prisma } from '../lib/prisma'
 import { requireAuth, requireRoles } from '../middleware/auth'
 import { notFound, forbidden, AppError } from '../lib/errors'
 import { writeAudit } from '../lib/audit'
-import { verifyQrPayload } from '../lib/qr'
+import { buildQrPayload, verifyQrPayload } from '../lib/qr'
 
 const phoneRegex = /^\+228\d{8}$/
 
@@ -43,6 +44,30 @@ const suspendCloseSchema = z.object({
 
 const verifyQrSchema = z.object({
   payload: z.string().min(1),
+})
+
+const createClientSchema = z.object({
+  id: z.string().uuid(),
+  first_name: z.string().min(1),
+  last_name: z.string().min(1),
+  phone: z.string().regex(phoneRegex),
+  phone_alt: z.string().regex(phoneRegex).nullable().optional(),
+  address_text: z.string().default(''),
+  landmark: z.string().nullable().optional(),
+  latitude: z.number(),
+  longitude: z.number(),
+  gps_accuracy_m: z.number(),
+  zone_id: z.string().uuid().nullable().optional(),
+  activity: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  sms_opt_out: z.boolean().default(false),
+  carnet_number: z.string().optional(),
+  registered_at: z.string().datetime({ offset: true }),
+  cycle_id: z.string().uuid(),
+  stake_amount: z.number().int().positive(),
+  cycle_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  cycle_end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  max_boxes: z.number().int().default(31),
 })
 
 export async function clientRoutes(app: FastifyInstance): Promise<void> {
@@ -97,6 +122,78 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     ])
 
     return reply.send({ data: clients, total, page: q.page, page_size: q.page_size })
+  })
+
+  // ── Direct client creation (online-only from mobile) ─────────────────────
+  const WEB_BATCH_ID = 'b0000099-0000-0000-0000-000000000099'
+
+  app.post('/clients', { preHandler: requireAuth }, async (req, reply) => {
+    const body = createClientSchema.safeParse(req.body)
+    if (!body.success) return reply.code(422).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
+    const c = body.data
+    const collectorId = req.actor.userId
+
+    // Idempotency: already created → return existing
+    const existing = await prisma.client.findUnique({
+      where: { id: c.id },
+      include: { cycles: { where: { id: c.cycle_id } } },
+    })
+    if (existing) {
+      return reply.send({ client: existing, cycle: existing.cycles[0] ?? null })
+    }
+
+    let assignedCarnet!: string
+    let createdClient: any
+    let createdCycle: any
+
+    await prisma.$transaction(async (tx) => {
+      if (!c.carnet_number) {
+        const last = await tx.carnetSticker.findFirst({ orderBy: { carnetNumber: 'desc' } })
+        const n = last ? parseInt(last.carnetNumber.replace('TP-', ''), 10) + 1 : 1
+        assignedCarnet = `TP-${n.toString().padStart(6, '0')}`
+        await tx.carnetSticker.create({
+          data: { carnetNumber: assignedCarnet, batchId: WEB_BATCH_ID, assignedCollectorId: collectorId, status: 'USED', usedByClientId: c.id },
+        })
+      } else {
+        assignedCarnet = c.carnet_number
+        const sticker = await tx.carnetSticker.findUnique({ where: { carnetNumber: assignedCarnet } })
+        if (!sticker) throw new AppError(422, 'STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`)
+        if (sticker.status === 'USED') throw new AppError(422, 'STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`)
+        await tx.carnetSticker.update({ where: { carnetNumber: assignedCarnet }, data: { status: 'USED', usedByClientId: c.id } })
+      }
+
+      createdClient = await tx.client.create({
+        data: {
+          id: c.id, carnetNumber: assignedCarnet,
+          firstName: c.first_name, lastName: c.last_name,
+          phone: c.phone, phoneAlt: c.phone_alt ?? null,
+          addressText: c.address_text, landmark: c.landmark ?? null,
+          latitude: c.latitude, longitude: c.longitude, gpsAccuracyM: c.gps_accuracy_m,
+          zoneId: c.zone_id ?? null,
+          collectorId, registeredById: req.actor.userId,
+          registeredAt: new Date(c.registered_at),
+          status: 'ACTIVE', smsOptOut: c.sms_opt_out,
+          activity: c.activity ?? null, notes: c.notes ?? null,
+        },
+      })
+
+      createdCycle = await tx.cycle.create({
+        data: {
+          id: c.cycle_id, clientId: c.id, cycleSequence: 1,
+          startDate: new Date(c.cycle_start), endDate: new Date(c.cycle_end),
+          stakeAmount: c.stake_amount, maxBoxes: c.max_boxes,
+          status: 'OPEN', totalPaid: 0, boxesFilled: 0,
+        },
+      })
+    })
+
+    await writeAudit({
+      actorId: req.actor.userId, actorRole: req.actor.role,
+      action: 'CREATE_CLIENT_DIRECT', entity: 'clients', entityId: c.id,
+      before: null, after: createdClient, ip: req.ip, deviceId: req.actor.deviceId,
+    })
+
+    return reply.code(201).send({ client: createdClient, cycle: createdCycle })
   })
 
   app.get('/clients/:id', { preHandler: requireAuth }, async (req, reply) => {
@@ -231,7 +328,28 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(204).send()
   })
 
-  // QR verification endpoint (used by app to validate sticker before registering client)
+  // QR image endpoint — returns a base64 PNG for office printing
+  app.get('/clients/:id/qr', { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { id: true, carnetNumber: true, firstName: true, lastName: true, collectorId: true },
+    })
+    if (!client) return reply.code(404).send({ error: notFound('Client', id) })
+    if (req.actor.role === 'COLLECTOR' && client.collectorId !== req.actor.userId) {
+      return reply.code(403).send({ error: forbidden() })
+    }
+    const qrPayload = buildQrPayload(client.carnetNumber)
+    const qrImage = await QRCode.toDataURL(qrPayload, { errorCorrectionLevel: 'M', width: 300, margin: 2 })
+    return reply.send({
+      carnet_number: client.carnetNumber,
+      qr_payload: qrPayload,
+      qr_image: qrImage,
+      name: `${client.firstName} ${client.lastName}`,
+    })
+  })
+
+  // QR verification endpoint (used by app to find a client by scanning their carnet)
   app.post('/clients/verify-qr', { preHandler: requireAuth }, async (req, reply) => {
     const body = verifyQrSchema.safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })

@@ -8,6 +8,9 @@ import { buildQrPayload, verifyQrPayload } from '../lib/qr'
 import { applyCollectionToCycle, getSettings, validateCollectionAmount } from '../services/cycleService'
 import { AppError } from '../lib/errors'
 
+// Fixed batch used for all app-registered clients (auto-created on first use)
+const WEB_BATCH_ID = 'b0000099-0000-0000-0000-000000000099'
+
 const pushSchema = z.object({
   device_id: z.string().uuid(),
   device_now: z.string().datetime({ offset: true }),
@@ -19,7 +22,7 @@ const pushSchema = z.object({
 
 const clientPushSchema = z.object({
   id: z.string().uuid(),
-  carnet_number: z.string().min(1),
+  carnet_number: z.string().min(1).optional(),
   first_name: z.string().min(1),
   last_name: z.string().min(1),
   phone: z.string().regex(/^\+228\d{8}$/),
@@ -83,8 +86,18 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
 
     const accepted: Record<string, string[]> = { clients: [], cycles: [], collections: [], void_requests: [] }
     const rejected: Rejection[] = []
+    const carnetAssignments: Record<string, string> = {}
 
     // ── Clients ──────────────────────────────────────────────────────────────
+    // Ensure the auto-registration batch exists (idempotent)
+    if (clients.length > 0) {
+      await prisma.stickerBatch.upsert({
+        where: { id: WEB_BATCH_ID },
+        create: { id: WEB_BATCH_ID, fromNumber: 1, toNumber: 999999, printedAt: new Date(), createdById: collectorId },
+        update: {},
+      })
+    }
+
     for (const rawClient of clients) {
       const parsed = clientPushSchema.safeParse(rawClient)
       if (!parsed.success) { rejected.push({ entity: 'client', id: (rawClient as any).id ?? '', code: 'VALIDATION_ERROR', message: parsed.error.message }); continue }
@@ -96,20 +109,37 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         continue
       }
 
-      // Validate sticker
-      const sticker = await prisma.carnetSticker.findUnique({ where: { carnetNumber: c.carnet_number } })
-      if (!sticker) { rejected.push({ entity: 'client', id: c.id, code: 'STICKER_NOT_FOUND', message: `Carnet ${c.carnet_number} inconnu` }); continue }
-      if (sticker.status === 'USED') { rejected.push({ entity: 'client', id: c.id, code: 'STICKER_ALREADY_USED', message: `Carnet ${c.carnet_number} déjà utilisé` }); continue }
-      if (req.actor.role === 'COLLECTOR' && sticker.assignedCollectorId !== collectorId) {
-        rejected.push({ entity: 'client', id: c.id, code: 'STICKER_NOT_ASSIGNED', message: `Carnet ${c.carnet_number} ne vous est pas assigné` }); continue
+      // Skip already-synced clients (idempotency)
+      const existing = await prisma.client.findUnique({ where: { id: c.id } })
+      if (existing) {
+        accepted.clients.push(c.id)
+        carnetAssignments[c.id] = existing.carnetNumber
+        continue
       }
 
       try {
+        let assignedCarnet: string
+
         await prisma.$transaction(async (tx) => {
-          await tx.client.upsert({
-            where: { id: c.id },
-            create: {
-              id: c.id, carnetNumber: c.carnet_number,
+          // Auto-generate carnet number if not provided by device
+          if (!c.carnet_number) {
+            const last = await tx.carnetSticker.findFirst({ orderBy: { carnetNumber: 'desc' } })
+            const n = last ? parseInt(last.carnetNumber.replace('TP-', ''), 10) + 1 : 1
+            assignedCarnet = `TP-${n.toString().padStart(6, '0')}`
+            await tx.carnetSticker.create({
+              data: { carnetNumber: assignedCarnet, batchId: WEB_BATCH_ID, assignedCollectorId: c.collector_id, status: 'USED', usedByClientId: c.id },
+            })
+          } else {
+            assignedCarnet = c.carnet_number
+            const sticker = await tx.carnetSticker.findUnique({ where: { carnetNumber: assignedCarnet } })
+            if (!sticker) throw new AppError(422, 'STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`)
+            if (sticker.status === 'USED') throw new AppError(422, 'STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`)
+            await tx.carnetSticker.update({ where: { carnetNumber: assignedCarnet }, data: { status: 'USED', usedByClientId: c.id } })
+          }
+
+          await tx.client.create({
+            data: {
+              id: c.id, carnetNumber: assignedCarnet!,
               firstName: c.first_name, lastName: c.last_name,
               phone: c.phone, phoneAlt: c.phone_alt ?? null,
               addressText: c.address_text, landmark: c.landmark ?? null,
@@ -119,16 +149,14 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
               registeredAt: new Date(c.registered_at),
               status: 'ACTIVE', smsOptOut: c.sms_opt_out, activity: c.activity ?? null, notes: c.notes ?? null,
             },
-            update: {
-              phoneAlt: c.phone_alt ?? null, landmark: c.landmark ?? null,
-              addressText: c.address_text, activity: c.activity ?? null, notes: c.notes ?? null,
-            },
           })
-          await tx.carnetSticker.update({ where: { carnetNumber: c.carnet_number }, data: { status: 'USED', usedByClientId: c.id } })
         })
+
         accepted.clients.push(c.id)
+        carnetAssignments[c.id] = assignedCarnet!
       } catch (e: any) {
-        rejected.push({ entity: 'client', id: c.id, code: 'DB_ERROR', message: e.message })
+        const code = e instanceof AppError ? e.code : 'DB_ERROR'
+        rejected.push({ entity: 'client', id: c.id, code, message: e.message })
       }
     }
 
@@ -260,7 +288,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       accepted.void_requests.push(v.id)
     }
 
-    return reply.send({ accepted, rejected, server_now: serverNow.toISOString() })
+    return reply.send({ accepted, rejected, carnet_assignments: carnetAssignments, server_now: serverNow.toISOString() })
   })
 
   // ─── PULL ─────────────────────────────────────────────────────────────────

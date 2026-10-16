@@ -13,6 +13,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       activeClients, suspendedClients, closedClients,
       openCycles, closedCycles, paidCycles, cancelledCycles,
       pendingAlerts, pendingVoids,
+      versedAgg,
     ] = await Promise.all([
       prisma.client.count({ where: { status: 'ACTIVE' } }),
       prisma.client.count({ where: { status: 'SUSPENDED' } }),
@@ -23,6 +24,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       prisma.cycle.count({ where: { status: 'CANCELLED' } }),
       prisma.alert.count({ where: { status: 'OPEN' } }),
       prisma.voidRequest.count({ where: { status: 'PENDING' } }),
+      prisma.cashHandover.aggregate({
+        where: { businessDate: { gte: today, lt: tomorrow }, status: { in: ['CONFIRMED', 'VALIDATED'] } },
+        _sum: { receivedAmount: true },
+      }),
     ])
 
     // Today's collections
@@ -129,6 +134,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
         monthCount:  monthAgg._count.id  ?? 0,
         openCycles, closedCycles, paidCycles, cancelledCycles,
         pendingAlerts, pendingVoids,
+        todayVersed: Number(versedAgg._sum.receivedAmount ?? 0),
+        todayGap: (todayAgg._sum.amount ?? 0) - Number(versedAgg._sum.receivedAmount ?? 0),
       },
       dailyCollections: daily,
       monthlyRevenue:   monthly,
