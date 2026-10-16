@@ -14,14 +14,15 @@ const webLoginSchema = z.object({
 })
 
 const collectorLoginSchema = z.object({
-  phone: z.string().min(1),
+  phone: z.string().min(1).optional(),
+  email: z.string().email().optional(),
   pin: z.string().length(6).regex(/^\d+$/),
   device_info: z.object({
     android_id: z.string().min(1),
     model: z.string().min(1),
     app_version: z.string().min(1),
   }),
-})
+}).refine((d) => d.phone || d.email, { message: 'phone or email required' })
 
 const refreshSchema = z.object({
   refresh_token: z.string().min(1),
@@ -109,16 +110,24 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const body = collectorLoginSchema.safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
 
-    const { phone, pin, device_info } = body.data
-    const lockKey = `col:${phone}`
+    const { phone, email, pin, device_info } = body.data
+    const lockKey = `col:${email ?? phone}`
     if (checkLocked(lockKey)) {
       return reply.code(429).send({ error: { code: 'LOCKED', message: 'Compte verrouillé 15 min' } })
     }
 
-    const user = await prisma.user.findFirst({ where: { phone, role: 'COLLECTOR', isActive: true } })
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          ...(phone ? [{ phone, role: 'COLLECTOR' as const }] : []),
+          ...(email ? [{ email, role: 'COLLECTOR' as const }] : []),
+        ],
+        isActive: true,
+      },
+    })
     if (!user || !user.pinHash || !(await argon2.verify(user.pinHash, pin))) {
       recordAttempt(lockKey, false)
-      return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Téléphone ou PIN incorrect' } })
+      return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Identifiant ou PIN incorrect' } })
     }
     recordAttempt(lockKey, true)
 
