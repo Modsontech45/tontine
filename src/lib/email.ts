@@ -1,7 +1,7 @@
 import { Resend } from 'resend'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
-const FROM = (process.env.EMAIL_FROM ?? 'Tontine Prospera <onboarding@resend.dev>').replace(/^"|"$/g, '')
+const FROM = (process.env.EMAIL_FROM ?? 'Tontine Prospera <noreply@mail.arenoxempire.com>').replace(/^"|"$/g, '')
 export const ADMIN_EMAIL = process.env.ADMIN_EMAIL
 
 const ROLE_LABELS: Record<string, string> = {
