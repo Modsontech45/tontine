@@ -54,7 +54,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
       include: {
         client: { select: { id: true, firstName: true, lastName: true, carnetNumber: true, latitude: true, longitude: true } },
         collector: { select: { id: true, firstName: true, lastName: true } },
-        voidRequest: true,
+        voidRequests: true,
       },
     })
     if (!collection) return reply.code(404).send({ error: notFound('Collection', id) })

@@ -132,8 +132,8 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
           } else {
             assignedCarnet = c.carnet_number
             const sticker = await tx.carnetSticker.findUnique({ where: { carnetNumber: assignedCarnet } })
-            if (!sticker) throw new AppError(422, 'STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`)
-            if (sticker.status === 'USED') throw new AppError(422, 'STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`)
+            if (!sticker) throw new AppError('STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`, 422)
+            if (sticker.status === 'USED') throw new AppError('STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`, 422)
             await tx.carnetSticker.update({ where: { carnetNumber: assignedCarnet }, data: { status: 'USED', usedByClientId: c.id } })
           }
 
@@ -218,7 +218,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         await prisma.$transaction(async (tx) => {
           const cycle = await tx.cycle.findUnique({ where: { id: col.cycle_id } })
           if (!cycle || cycle.status !== 'OPEN') {
-            throw new AppError(422, 'CYCLE_NOT_OPEN', 'Le cycle n\'est pas ouvert')
+            throw new AppError('CYCLE_NOT_OPEN', 'Le cycle n\'est pas ouvert', 422)
           }
           validateCollectionAmount(col.amount, cycle as any)
 
@@ -231,7 +231,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
           if (col.latitude == null) flags.push('GPS_MISSING')
           else {
             if ((col.gps_accuracy_m ?? 0) > 100) flags.push('GPS_LOW_ACCURACY')
-            const dist = haversineM(col.latitude, col.longitude, client.latitude, client.longitude)
+            const dist = haversineM(col.latitude, col.longitude ?? 0, client.latitude, client.longitude)
             if (dist > (settings.gpsAlertDistanceM ?? 300)) flags.push('GPS_FAR')
           }
           const hour = new Date(col.collected_at).getHours()
@@ -252,7 +252,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
               latitude: col.latitude ?? null, longitude: col.longitude ?? null,
               gpsAccuracyM: col.gps_accuracy_m ?? null,
               distanceFromClientM: col.latitude != null
-                ? haversineM(col.latitude, col.longitude, client.latitude, client.longitude)
+                ? haversineM(col.latitude, col.longitude ?? 0, client.latitude, client.longitude)
                 : null,
               flags,
             },

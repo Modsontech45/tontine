@@ -157,8 +157,8 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       } else {
         assignedCarnet = c.carnet_number
         const sticker = await tx.carnetSticker.findUnique({ where: { carnetNumber: assignedCarnet } })
-        if (!sticker) throw new AppError(422, 'STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`)
-        if (sticker.status === 'USED') throw new AppError(422, 'STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`)
+        if (!sticker) throw new AppError('STICKER_NOT_FOUND', `Carnet ${assignedCarnet} inconnu`, 422)
+        if (sticker.status === 'USED') throw new AppError('STICKER_ALREADY_USED', `Carnet ${assignedCarnet} déjà utilisé`, 422)
         await tx.carnetSticker.update({ where: { carnetNumber: assignedCarnet }, data: { status: 'USED', usedByClientId: c.id } })
       }
 
