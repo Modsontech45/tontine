@@ -77,6 +77,9 @@ model Device {
   appVersion            String       @map("app_version")
   status                DeviceStatus
   lastSyncAt            DateTime?    @map("last_sync_at") @db.Timestamptz
+  lastLoginAt           DateTime?    @map("last_login_at") @db.Timestamptz
+  lastLoginLat          Float?       @map("last_login_lat")
+  lastLoginLng          Float?       @map("last_login_lng")
   unsyncedCountReported Int          @default(0) @map("unsynced_count_reported")
   approvedBy            String?      @map("approved_by") @db.Uuid
   approvedAt            DateTime?    @map("approved_at") @db.Timestamptz

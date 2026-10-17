@@ -144,6 +144,48 @@ export async function sendOtpEmail(opts: {
   })
 }
 
+export async function sendNewDeviceAlert(opts: {
+  collectorName: string
+  collectorPhone: string
+  model: string
+  androidId: string
+  appVersion: string
+  lat?: number
+  lng?: number
+  deviceId: string
+}) {
+  if (!ADMIN_EMAIL) return
+  const { collectorName, collectorPhone, model, androidId, appVersion, lat, lng, deviceId } = opts
+  const locationHtml = lat && lng
+    ? `<tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Localisation</td><td style="padding:8px 12px;"><a href="https://www.google.com/maps?q=${lat},${lng}" style="color:#1e40af;">${lat.toFixed(5)}, ${lng.toFixed(5)} (ouvrir)</a></td></tr>`
+    : `<tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Localisation</td><td style="padding:8px 12px;color:#9ca3af;">Non disponible</td></tr>`
+
+  await resend.emails.send({
+    from: FROM,
+    to: ADMIN_EMAIL,
+    subject: `🔴 Nouvel appareil — ${collectorName} — approbation requise`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
+        <div style="background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin-bottom:20px;">
+          <strong style="color:#dc2626;">Nouvel appareil détecté</strong><br>
+          <span style="color:#7f1d1d;font-size:14px;">Un collecteur tente de se connecter depuis un appareil inconnu. Approbation requise.</span>
+        </div>
+        <table style="border-collapse:collapse;width:100%;background:#f9fafb;border-radius:8px;margin:16px 0;">
+          <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Collecteur</td><td style="padding:8px 12px;font-weight:600;">${collectorName}</td></tr>
+          <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Téléphone</td><td style="padding:8px 12px;">${collectorPhone}</td></tr>
+          <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Modèle</td><td style="padding:8px 12px;">${model || '—'}</td></tr>
+          <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">ID Android</td><td style="padding:8px 12px;font-family:monospace;font-size:12px;">${androidId}</td></tr>
+          <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Version app</td><td style="padding:8px 12px;">${appVersion}</td></tr>
+          ${locationHtml}
+        </table>
+        <p style="font-size:14px;color:#374151;">Connectez-vous au tableau de bord pour approuver ou refuser cet appareil.</p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
+        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera — Sécurité</p>
+      </div>
+    `,
+  })
+}
+
 export async function sendWelcomeEmail(opts: {
   to: string
   firstName: string

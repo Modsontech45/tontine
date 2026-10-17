@@ -6,6 +6,7 @@ import { unauthorized, AppError } from '../lib/errors'
 import { writeAudit } from '../lib/audit'
 import { createHash, randomBytes } from 'crypto'
 import { requestOtp, verifyOtp } from '../lib/otp'
+import { sendNewDeviceAlert } from '../lib/email'
 
 const webLoginSchema = z.object({
   phone: z.string().optional(),
@@ -21,6 +22,8 @@ const collectorLoginSchema = z.object({
     android_id: z.string().min(1),
     model: z.string().min(1),
     app_version: z.string().min(1),
+    latitude: z.number().optional(),
+    longitude: z.number().optional(),
   }),
 }).refine((d) => d.phone || d.email, { message: 'phone or email required' })
 
@@ -131,15 +134,49 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
     recordAttempt(lockKey, true)
 
+    const { latitude, longitude } = device_info
+    const now = new Date()
+
     let device = await prisma.device.findFirst({ where: { userId: user.id, androidId: device_info.android_id } })
+    const isNewDevice = !device
+
     if (!device) {
       device = await prisma.device.create({
-        data: { userId: user.id, androidId: device_info.android_id, model: device_info.model, appVersion: device_info.app_version, status: 'PENDING' },
+        data: {
+          userId: user.id,
+          androidId: device_info.android_id,
+          model: device_info.model,
+          appVersion: device_info.app_version,
+          status: 'PENDING',
+          lastLoginAt: now,
+          lastLoginLat: latitude,
+          lastLoginLng: longitude,
+        },
       })
+      // Fire-and-forget admin alert
+      sendNewDeviceAlert({
+        collectorName: `${user.firstName} ${user.lastName}`,
+        collectorPhone: user.phone,
+        model: device_info.model,
+        androidId: device_info.android_id,
+        appVersion: device_info.app_version,
+        lat: latitude,
+        lng: longitude,
+        deviceId: device.id,
+      }).catch(() => {})
     } else if (device.status === 'REVOKED') {
       return reply.code(403).send({ error: { code: 'DEVICE_REVOKED', message: 'Appareil révoqué' } })
     } else {
-      await prisma.device.update({ where: { id: device.id }, data: { model: device_info.model, appVersion: device_info.app_version } })
+      await prisma.device.update({
+        where: { id: device.id },
+        data: {
+          model: device_info.model,
+          appVersion: device_info.app_version,
+          lastLoginAt: now,
+          lastLoginLat: latitude ?? device.lastLoginLat,
+          lastLoginLng: longitude ?? device.lastLoginLng,
+        },
+      })
     }
 
     if (device.status === 'PENDING') {
