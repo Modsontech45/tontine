@@ -36,6 +36,15 @@ export async function dashboardRoutes(app: FastifyInstance) {
       _sum: { amount: true }, _count: { id: true },
     })
 
+    // Expected today = sum of stake_amount for all open cycles with remaining boxes
+    const expectedRaw = await prisma.$queryRaw<[{ expected: number }]>`
+      SELECT COALESCE(SUM(stake_amount), 0)::int AS expected
+      FROM cycles
+      WHERE status = 'OPEN' AND boxes_filled < max_boxes
+    `
+    const expectedToday = expectedRaw[0]?.expected ?? 0
+    const remainingToday = Math.max(0, expectedToday - (todayAgg._sum.amount ?? 0))
+
     // Month collections
     const monthAgg = await prisma.collection.aggregate({
       where: { businessDate: { gte: monthStart, lt: tomorrow }, voidedAt: null },
@@ -136,6 +145,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
         pendingAlerts, pendingVoids,
         todayVersed: Number(versedAgg._sum.receivedAmount ?? 0),
         todayGap: (todayAgg._sum.amount ?? 0) - Number(versedAgg._sum.receivedAmount ?? 0),
+        expectedToday,
+        remainingToday,
       },
       dailyCollections: daily,
       monthlyRevenue:   monthly,
