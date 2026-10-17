@@ -29,6 +29,7 @@ export async function auditLogRoutes(app: FastifyInstance): Promise<void> {
       }),
       prisma.auditLog.count({ where }),
     ])
-    return reply.send({ data: logs, total, page: q.page, page_size: q.page_size })
+    const serialized = logs.map((l) => ({ ...l, id: l.id.toString() }))
+    return reply.send({ data: serialized, total, page: q.page, page_size: q.page_size })
   })
 }
