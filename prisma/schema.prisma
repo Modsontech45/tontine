@@ -57,6 +57,9 @@ model User {
   stickerBatchesCreated  StickerBatch[]
   settingsUpdated        Setting[]
   otpCodes               OtpCode[]
+  loanRequestsAsCollector LoanRequest[] @relation("LoanCollector")
+  loanRequestsReviewed    LoanRequest[] @relation("LoanReviewer")
+  creditConfigUpdates     CreditConfig[]
 
   @@map("users")
 }
@@ -210,12 +213,13 @@ model Client {
   registeredBy  User           @relation("RegisteredBy", fields: [registeredById], references: [id])
   zone          Zone?          @relation(fields: [zoneId], references: [id])
 
-  assignments ClientAssignment[]
-  cycles      Cycle[]
-  collections Collection[]
-  smsOutbox   SmsOutbox[]
-  spotChecks  SpotCheck[]
-  alerts      Alert[]           @relation("AlertClient")
+  assignments  ClientAssignment[]
+  cycles       Cycle[]
+  collections  Collection[]
+  smsOutbox    SmsOutbox[]
+  spotChecks   SpotCheck[]
+  alerts       Alert[]           @relation("AlertClient")
+  loanRequests LoanRequest[]
 
   @@index([collectorId])
   @@index([zoneId])
@@ -584,4 +588,53 @@ model OtpCode {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("otp_codes")
+}
+
+// ---------------------------------------------------------------------------
+// Credit / Loan
+// ---------------------------------------------------------------------------
+
+model CreditConfig {
+  id                    String   @id @default("singleton")
+  minContributingMonths Int      @default(3)    @map("min_contributing_months")
+  maxLoanAmount         Int      @default(100000) @map("max_loan_amount")
+  tiers                 Json     @default("[{\"months\":1,\"interestPct\":5},{\"months\":2,\"interestPct\":10},{\"months\":3,\"interestPct\":15}]")
+  isEnabled             Boolean  @default(true) @map("is_enabled")
+  updatedAt             DateTime @updatedAt      @map("updated_at") @db.Timestamptz
+  updatedById           String?  @map("updated_by") @db.Uuid
+
+  updatedBy User? @relation(fields: [updatedById], references: [id])
+
+  @@map("credit_config")
+}
+
+model LoanRequest {
+  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId       String     @map("client_id") @db.Uuid
+  collectorId    String     @map("collector_id") @db.Uuid
+  amount         Int
+  durationMonths Int        @map("duration_months")
+  interestPct    Float      @map("interest_pct")
+  totalRepay     Int        @map("total_repay")
+  status         LoanStatus @default(PENDING)
+  note           String?
+  requestedAt    DateTime   @default(now()) @map("requested_at") @db.Timestamptz
+  reviewedAt     DateTime?  @map("reviewed_at")  @db.Timestamptz
+  reviewedById   String?    @map("reviewed_by")  @db.Uuid
+  reviewNote     String?    @map("review_note")
+
+  client     Client @relation(fields: [clientId], references: [id])
+  collector  User   @relation("LoanCollector",  fields: [collectorId],  references: [id])
+  reviewedBy User?  @relation("LoanReviewer",   fields: [reviewedById], references: [id])
+
+  @@index([clientId])
+  @@index([status])
+  @@map("loan_requests")
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
 }
