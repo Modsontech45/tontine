@@ -165,7 +165,29 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         deviceId: device.id,
       }).catch(() => {})
     } else if (device.status === 'REVOKED') {
-      return reply.code(403).send({ error: { code: 'DEVICE_REVOKED', message: 'Appareil révoqué' } })
+      // Collector retrying on a revoked device → put back to PENDING so admin can re-approve
+      await prisma.device.update({
+        where: { id: device.id },
+        data: {
+          status: 'PENDING',
+          lastLoginAt: now,
+          lastLoginLat: latitude ?? device.lastLoginLat,
+          lastLoginLng: longitude ?? device.lastLoginLng,
+          model: device_info.model,
+          appVersion: device_info.app_version,
+        },
+      })
+      sendNewDeviceAlert({
+        collectorName: `${user.firstName} ${user.lastName}`,
+        collectorPhone: user.phone,
+        model: device_info.model,
+        androidId: device_info.android_id,
+        appVersion: device_info.app_version,
+        lat: latitude,
+        lng: longitude,
+        deviceId: device.id,
+      }).catch(() => {})
+      return reply.code(202).send({ status: 'PENDING', message: 'Appareil en attente d\'approbation par un administrateur', device_id: device.id })
     } else {
       await prisma.device.update({
         where: { id: device.id },
