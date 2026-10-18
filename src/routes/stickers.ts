@@ -116,7 +116,10 @@ export async function stickerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const [stickers, total] = await Promise.all([
-      prisma.carnetSticker.findMany({ where, skip: (pg - 1) * ps, take: ps, orderBy: { carnetNumber: 'asc' } }),
+      prisma.carnetSticker.findMany({
+        where, skip: (pg - 1) * ps, take: ps, orderBy: { carnetNumber: 'asc' },
+        include: { client: { select: { id: true, firstName: true, lastName: true } } },
+      }),
       prisma.carnetSticker.count({ where }),
     ])
 
