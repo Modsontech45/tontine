@@ -23,6 +23,7 @@ import { handoverRoutes } from './routes/handovers'
 import { otpRoutes } from './routes/otp'
 import { activityRoutes } from './routes/activity'
 import { creditRoutes } from './routes/credit'
+import { notificationRoutes } from './routes/notifications'
 import { startDailySummaryJob } from './jobs/daily-summary'
 import { AppError } from './lib/errors'
 import { prisma } from './lib/prisma'
@@ -71,6 +72,7 @@ async function build() {
     await v1.register(otpRoutes)
     await v1.register(activityRoutes)
     await v1.register(creditRoutes)
+    await v1.register(notificationRoutes)
   }, { prefix: '/v1' })
 
   return app
