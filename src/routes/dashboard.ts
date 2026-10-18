@@ -36,6 +36,14 @@ export async function dashboardRoutes(app: FastifyInstance) {
       _sum: { amount: true }, _count: { id: true },
     })
 
+    // Expected today = sum of daily stakes for all open cycles with boxes remaining
+    const expectedRaw = await prisma.$queryRaw<[{ expected: number }]>`
+      SELECT COALESCE(SUM(stake_amount), 0)::int AS expected
+      FROM cycles
+      WHERE status = 'OPEN' AND boxes_filled < max_boxes
+    `
+    const expectedToday = expectedRaw[0]?.expected ?? 0
+
     // À encaisser = money collected today not yet handed over to cashier
     const todayVersedAmount = Number(versedAgg._sum.receivedAmount ?? 0)
     const remainingToday = Math.max(0, (todayAgg._sum.amount ?? 0) - todayVersedAmount)
@@ -140,6 +148,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         pendingAlerts, pendingVoids,
         todayVersed: todayVersedAmount,
         todayGap: (todayAgg._sum.amount ?? 0) - todayVersedAmount,
+        expectedToday,
         remainingToday,
       },
       dailyCollections: daily,
