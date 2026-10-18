@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { requireRoles } from '../middleware/auth'
 import { requestOtp, verifyOtp } from '../lib/otp'
 
-const VALID_PURPOSES = ['CONFIRM_HANDOVER', 'DEACTIVATE_USER', 'VOID_COLLECTION', 'RESET_PASSWORD'] as const
+const VALID_PURPOSES = ['CONFIRM_HANDOVER', 'DEACTIVATE_USER', 'VOID_COLLECTION', 'RESET_PASSWORD', 'UPDATE_CREDIT_CONFIG'] as const
 
 export async function otpRoutes(app: FastifyInstance) {
   app.post('/otp/request', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {

@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'DEVICE_PENDING'
   | 'ONE_OPEN_CYCLE'
   | 'CONFLICT'
+  | 'INVALID_OTP'
   | 'INTERNAL_ERROR'
 
 export class AppError extends Error {

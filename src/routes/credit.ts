@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma'
 import { requireAuth, requireRoles } from '../middleware/auth'
 import { writeAudit } from '../lib/audit'
 import { AppError } from '../lib/errors'
+import { verifyOtp } from '../lib/otp'
 
 const CONFIG_ID = 'singleton'
 
@@ -14,6 +15,7 @@ const updateConfigSchema = z.object({
   maxLoanAmount: z.number().int().min(1000),
   tiers: z.array(tierSchema).min(1).max(6),
   isEnabled: z.boolean(),
+  otp_code: z.string().length(6),
 })
 
 const requestLoanSchema = z.object({
@@ -68,10 +70,14 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const body = updateConfigSchema.safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
 
+    const valid = await verifyOtp(req.actor.userId, 'UPDATE_CREDIT_CONFIG', body.data.otp_code)
+    if (!valid) throw new AppError('INVALID_OTP', 'Code de vérification invalide ou expiré.', 422)
+
+    const { otp_code: _, ...configData } = body.data
     const config = await prisma.creditConfig.upsert({
       where: { id: CONFIG_ID },
-      update: { ...body.data, updatedById: req.actor.userId },
-      create: { id: CONFIG_ID, ...body.data, updatedById: req.actor.userId },
+      update: { ...configData, updatedById: req.actor.userId },
+      create: { id: CONFIG_ID, ...configData, updatedById: req.actor.userId },
     })
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'UPDATE_CREDIT_CONFIG', entity: 'credit_config', ip: req.ip })
