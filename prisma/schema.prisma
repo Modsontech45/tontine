@@ -57,8 +57,9 @@ model User {
   stickerBatchesCreated  StickerBatch[]
   settingsUpdated        Setting[]
   otpCodes               OtpCode[]
-  loanRequestsAsCollector LoanRequest[] @relation("LoanCollector")
-  loanRequestsReviewed    LoanRequest[] @relation("LoanReviewer")
+  loanRequestsAsCollector LoanRequest[]   @relation("LoanCollector")
+  loanRequestsReviewed    LoanRequest[]   @relation("LoanReviewer")
+  loanRepayments          LoanRepayment[] @relation("LoanCashier")
   creditConfigUpdates     CreditConfig[]
 
   @@map("users")
@@ -622,14 +623,30 @@ model LoanRequest {
   reviewedAt     DateTime?  @map("reviewed_at")  @db.Timestamptz
   reviewedById   String?    @map("reviewed_by")  @db.Uuid
   reviewNote     String?    @map("review_note")
+  dueDate        DateTime?  @map("due_date") @db.Timestamptz
 
-  client     Client @relation(fields: [clientId], references: [id])
-  collector  User   @relation("LoanCollector",  fields: [collectorId],  references: [id])
-  reviewedBy User?  @relation("LoanReviewer",   fields: [reviewedById], references: [id])
+  client      Client           @relation(fields: [clientId], references: [id])
+  collector   User             @relation("LoanCollector",  fields: [collectorId],  references: [id])
+  reviewedBy  User?            @relation("LoanReviewer",   fields: [reviewedById], references: [id])
+  repayments  LoanRepayment[]
 
   @@index([clientId])
   @@index([status])
   @@map("loan_requests")
+}
+
+model LoanRepayment {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loanId    String      @map("loan_id") @db.Uuid
+  loan      LoanRequest @relation(fields: [loanId], references: [id])
+  amount    Int
+  cashierId String      @map("cashier_id") @db.Uuid
+  cashier   User        @relation("LoanCashier", fields: [cashierId], references: [id])
+  note      String?
+  paidAt    DateTime    @default(now()) @map("paid_at") @db.Timestamptz
+
+  @@index([loanId])
+  @@map("loan_repayments")
 }
 
 enum LoanStatus {
@@ -637,4 +654,5 @@ enum LoanStatus {
   APPROVED
   REJECTED
   CANCELLED
+  REPAID
 }

@@ -26,6 +26,22 @@ const requestLoanSchema = z.object({
 })
 
 const reviewSchema = z.object({ reviewNote: z.string().max(500).optional() })
+const repaySchema = z.object({
+  amount: z.number().int().min(1),
+  note: z.string().max(500).optional(),
+})
+
+const REPAYMENT_INCLUDE = {
+  client: { select: { id: true, firstName: true, lastName: true, carnetNumber: true, phone: true } },
+  collector: { select: { id: true, firstName: true, lastName: true } },
+  reviewedBy: { select: { firstName: true, lastName: true } },
+  repayments: { select: { id: true, amount: true, paidAt: true, note: true, cashier: { select: { firstName: true, lastName: true } } }, orderBy: { paidAt: 'asc' as const } },
+}
+
+function withComputed<T extends { totalRepay: number; repayments: { amount: number }[]; dueDate: Date | null }>(loan: T) {
+  const paidAmount = loan.repayments.reduce((s, r) => s + r.amount, 0)
+  return { ...loan, paidAmount, remainingAmount: loan.totalRepay - paidAmount }
+}
 
 async function getOrCreateConfig() {
   return prisma.creditConfig.upsert({
@@ -142,19 +158,25 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(loan)
   })
 
-  // ── GET all loan requests (admin/controller) ──────────────────────────────
-  app.get('/credit/requests', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER') }, async (req, reply) => {
+  // ── GET all loan requests (admin/controller/cashier) ─────────────────────
+  app.get('/credit/requests', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'CASHIER') }, async (req, reply) => {
     const { status } = req.query as { status?: string }
     const requests = await prisma.loanRequest.findMany({
       where: status ? { status: status as any } : undefined,
-      include: {
-        client: { select: { id: true, firstName: true, lastName: true, carnetNumber: true, phone: true } },
-        collector: { select: { id: true, firstName: true, lastName: true } },
-        reviewedBy: { select: { firstName: true, lastName: true } },
-      },
+      include: REPAYMENT_INCLUDE,
       orderBy: { requestedAt: 'desc' },
     })
-    return reply.send({ data: requests })
+    return reply.send({ data: requests.map(withComputed) })
+  })
+
+  // ── GET active loans (APPROVED, not yet REPAID) — admin + cashier ─────────
+  app.get('/credit/active-loans', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'CASHIER') }, async (_req, reply) => {
+    const loans = await prisma.loanRequest.findMany({
+      where: { status: 'APPROVED' },
+      include: REPAYMENT_INCLUDE,
+      orderBy: { reviewedAt: 'asc' },
+    })
+    return reply.send({ data: loans.map(withComputed) })
   })
 
   // ── GET collector's own requests ──────────────────────────────────────────
@@ -180,9 +202,12 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     if (!loan) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Demande introuvable' } })
     if (loan.status !== 'PENDING') return reply.code(409).send({ error: { code: 'INVALID_STATUS', message: 'Demande déjà traitée' } })
 
+    const now = new Date()
+    const dueDate = new Date(now)
+    dueDate.setMonth(dueDate.getMonth() + loan.durationMonths)
     const updated = await prisma.loanRequest.update({
       where: { id },
-      data: { status: 'APPROVED', reviewedById: req.actor.userId, reviewedAt: new Date(), reviewNote: body.data.reviewNote },
+      data: { status: 'APPROVED', reviewedById: req.actor.userId, reviewedAt: now, reviewNote: body.data.reviewNote, dueDate },
     })
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'APPROVE_LOAN', entity: 'loan_requests', entityId: id, ip: req.ip })
     return reply.send(updated)
@@ -204,5 +229,51 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     })
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'REJECT_LOAN', entity: 'loan_requests', entityId: id, ip: req.ip })
     return reply.send(updated)
+  })
+
+  // ── POST repay (cashier) ──────────────────────────────────────────────────
+  app.post('/credit/requests/:id/repay', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = repaySchema.safeParse(req.body)
+    if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
+
+    const loan = await prisma.loanRequest.findUnique({
+      where: { id },
+      include: { repayments: { select: { amount: true } } },
+    })
+    if (!loan) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Demande introuvable' } })
+    if (loan.status !== 'APPROVED') return reply.code(409).send({ error: { code: 'INVALID_STATUS', message: 'Ce prêt n\'est pas actif' } })
+
+    const alreadyPaid = loan.repayments.reduce((s, r) => s + r.amount, 0)
+    const remaining = loan.totalRepay - alreadyPaid
+    if (body.data.amount > remaining) {
+      return reply.code(422).send({ error: { code: 'AMOUNT_EXCEEDED', message: `Montant maximum à rembourser: ${remaining} FCFA` } })
+    }
+
+    const repayment = await prisma.loanRepayment.create({
+      data: { loanId: id, amount: body.data.amount, cashierId: req.actor.userId, note: body.data.note },
+    })
+
+    // Mark loan as REPAID when fully paid
+    const newTotal = alreadyPaid + body.data.amount
+    if (newTotal >= loan.totalRepay) {
+      await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
+    }
+
+    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT', entity: 'loan_requests', entityId: id, ip: req.ip })
+
+    const updated = await prisma.loanRequest.findUnique({ where: { id }, include: REPAYMENT_INCLUDE })
+    return reply.code(201).send(withComputed(updated!))
+  })
+
+  // ── GET single client's loan history (all roles) ──────────────────────────
+  app.get('/credit/client/:clientId', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'CASHIER', 'COLLECTOR') }, async (req, reply) => {
+    const { clientId } = req.params as { clientId: string }
+    const loans = await prisma.loanRequest.findMany({
+      where: { clientId },
+      include: REPAYMENT_INCLUDE,
+      orderBy: { requestedAt: 'desc' },
+    })
+    return reply.send({ data: loans.map(withComputed) })
   })
 }
