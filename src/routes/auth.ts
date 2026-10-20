@@ -73,25 +73,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const { phone, email, password } = body.data
     if (!phone && !email) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: 'phone or email required' } })
 
-    const lockKey = email ?? phone ?? ''
-    if (checkLocked(lockKey)) {
-      return reply.code(429).send({ error: { code: 'LOCKED', message: 'Compte verrouillé 15 min' } })
-    }
-
     const user = await prisma.user.findFirst({
       where: { OR: [email ? { email } : {}, phone ? { phone } : {}], isActive: true },
     })
 
     if (!user || !user.passwordHash || !(await argon2.verify(user.passwordHash, password))) {
-      recordAttempt(lockKey, false)
       return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Identifiants invalides' } })
     }
     if (['COLLECTOR'].includes(user.role)) {
-      recordAttempt(lockKey, false)
       return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Utilisez l\'app mobile' } })
     }
-
-    recordAttempt(lockKey, true)
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
 
     const accessToken = app.jwt.sign(
