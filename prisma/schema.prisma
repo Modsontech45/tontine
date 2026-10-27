@@ -60,6 +60,7 @@ model User {
   loanRequestsAsCollector LoanRequest[]   @relation("LoanCollector")
   loanRequestsReviewed    LoanRequest[]   @relation("LoanReviewer")
   loanRepayments          LoanRepayment[] @relation("LoanCashier")
+  loanRepaymentRecorded   LoanRepayment[] @relation("LoanRepaymentCollector")
   creditConfigUpdates     CreditConfig[]
 
   @@map("users")
@@ -636,17 +637,28 @@ model LoanRequest {
 }
 
 model LoanRepayment {
-  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  loanId    String      @map("loan_id") @db.Uuid
-  loan      LoanRequest @relation(fields: [loanId], references: [id])
-  amount    Int
-  cashierId String      @map("cashier_id") @db.Uuid
-  cashier   User        @relation("LoanCashier", fields: [cashierId], references: [id])
-  note      String?
-  paidAt    DateTime    @default(now()) @map("paid_at") @db.Timestamptz
+  id          String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loanId      String               @map("loan_id") @db.Uuid
+  loan        LoanRequest          @relation(fields: [loanId], references: [id])
+  amount      Int
+  status      LoanRepaymentStatus  @default(PENDING)
+  collectorId String?              @map("collector_id") @db.Uuid
+  collector   User?                @relation("LoanRepaymentCollector", fields: [collectorId], references: [id])
+  cashierId   String?              @map("cashier_id") @db.Uuid
+  cashier     User?                @relation("LoanCashier", fields: [cashierId], references: [id])
+  note        String?
+  recordedAt  DateTime             @default(now()) @map("recorded_at") @db.Timestamptz
+  confirmedAt DateTime?            @map("confirmed_at") @db.Timestamptz
 
   @@index([loanId])
+  @@index([status])
   @@map("loan_repayments")
+}
+
+enum LoanRepaymentStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
 }
 
 enum LoanStatus {

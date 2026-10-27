@@ -31,16 +31,33 @@ const repaySchema = z.object({
   note: z.string().max(500).optional(),
 })
 
-const REPAYMENT_INCLUDE = {
-  client: { select: { id: true, firstName: true, lastName: true, carnetNumber: true, phone: true } },
+const REPAYMENT_SELECT = {
+  id: true, amount: true, status: true, note: true,
+  recordedAt: true, confirmedAt: true,
   collector: { select: { id: true, firstName: true, lastName: true } },
-  reviewedBy: { select: { firstName: true, lastName: true } },
-  repayments: { select: { id: true, amount: true, paidAt: true, note: true, cashier: { select: { firstName: true, lastName: true } } }, orderBy: { paidAt: 'asc' as const } },
+  cashier:   { select: { id: true, firstName: true, lastName: true } },
 }
 
-function withComputed<T extends { totalRepay: number; repayments: { amount: number }[]; dueDate: Date | null }>(loan: T) {
-  const paidAmount = loan.repayments.reduce((s, r) => s + r.amount, 0)
-  return { ...loan, paidAmount, remainingAmount: loan.totalRepay - paidAmount }
+const REPAYMENT_INCLUDE = {
+  client:    { select: { id: true, firstName: true, lastName: true, carnetNumber: true, phone: true } },
+  collector: { select: { id: true, firstName: true, lastName: true } },
+  reviewedBy:{ select: { firstName: true, lastName: true } },
+  repayments:{ select: REPAYMENT_SELECT, orderBy: { recordedAt: 'asc' as const } },
+}
+
+function withComputed<T extends {
+  totalRepay: number
+  dueDate: Date | null
+  repayments: { amount: number; status: string }[]
+}>(loan: T) {
+  // Only CONFIRMED repayments count toward the balance
+  const paidAmount = loan.repayments
+    .filter(r => r.status === 'CONFIRMED')
+    .reduce((s, r) => s + r.amount, 0)
+  const pendingAmount = loan.repayments
+    .filter(r => r.status === 'PENDING')
+    .reduce((s, r) => s + r.amount, 0)
+  return { ...loan, paidAmount, remainingAmount: loan.totalRepay - paidAmount, pendingAmount }
 }
 
 async function getOrCreateConfig() {
@@ -231,39 +248,115 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(updated)
   })
 
-  // ── POST repay (cashier) ──────────────────────────────────────────────────
-  app.post('/credit/requests/:id/repay', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {
+  // ── POST repay — collector records field payment (PENDING) ───────────────
+  // OR cashier records direct payment (CONFIRMED, legacy/direct)
+  app.post('/credit/requests/:id/repay', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER', 'COLLECTOR') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const body = repaySchema.safeParse(req.body)
     if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
 
     const loan = await prisma.loanRequest.findUnique({
       where: { id },
-      include: { repayments: { select: { amount: true } } },
+      include: { repayments: { select: { amount: true, status: true } } },
     })
     if (!loan) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Demande introuvable' } })
     if (loan.status !== 'APPROVED') return reply.code(409).send({ error: { code: 'INVALID_STATUS', message: 'Ce prêt n\'est pas actif' } })
 
-    const alreadyPaid = loan.repayments.reduce((s, r) => s + r.amount, 0)
-    const remaining = loan.totalRepay - alreadyPaid
+    const confirmedPaid = loan.repayments.filter(r => r.status === 'CONFIRMED').reduce((s, r) => s + r.amount, 0)
+    const remaining = loan.totalRepay - confirmedPaid
     if (body.data.amount > remaining) {
       return reply.code(422).send({ error: { code: 'AMOUNT_EXCEEDED', message: `Montant maximum à rembourser: ${remaining} FCFA` } })
     }
 
-    const repayment = await prisma.loanRepayment.create({
-      data: { loanId: id, amount: body.data.amount, cashierId: req.actor.userId, note: body.data.note },
+    const isCollector = req.actor.role === 'COLLECTOR'
+    await prisma.loanRepayment.create({
+      data: {
+        loanId: id,
+        amount: body.data.amount,
+        note: body.data.note,
+        status: isCollector ? 'PENDING' : 'CONFIRMED',
+        collectorId: isCollector ? req.actor.userId : null,
+        cashierId: isCollector ? null : req.actor.userId,
+        confirmedAt: isCollector ? null : new Date(),
+      },
     })
 
-    // Mark loan as REPAID when fully paid
-    const newTotal = alreadyPaid + body.data.amount
-    if (newTotal >= loan.totalRepay) {
-      await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
+    // Only auto-close when cashier pays directly (CONFIRMED)
+    if (!isCollector) {
+      const newTotal = confirmedPaid + body.data.amount
+      if (newTotal >= loan.totalRepay) {
+        await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
+      }
     }
 
-    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT', entity: 'loan_requests', entityId: id, ip: req.ip })
-
+    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_RECORDED', entity: 'loan_requests', entityId: id, ip: req.ip })
     const updated = await prisma.loanRequest.findUnique({ where: { id }, include: REPAYMENT_INCLUDE })
     return reply.code(201).send(withComputed(updated!))
+  })
+
+  // ── POST confirm repayment (cashier validates field payment) ─────────────
+  app.post('/credit/repayments/:repaymentId/confirm', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {
+    const { repaymentId } = req.params as { repaymentId: string }
+
+    const repayment = await prisma.loanRepayment.findUnique({
+      where: { id: repaymentId },
+      include: { loan: { include: { repayments: { select: { id: true, amount: true, status: true } } } } },
+    })
+    if (!repayment) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Remboursement introuvable' } })
+    if (repayment.status !== 'PENDING') return reply.code(409).send({ error: { code: 'INVALID_STATUS', message: 'Déjà traité' } })
+
+    await prisma.loanRepayment.update({
+      where: { id: repaymentId },
+      data: { status: 'CONFIRMED', cashierId: req.actor.userId, confirmedAt: new Date() },
+    })
+
+    // Check if loan is now fully paid
+    const allConfirmed = repayment.loan.repayments
+      .filter(r => r.status === 'CONFIRMED' || r.id === repaymentId)
+      .reduce((s, r) => s + r.amount, 0) + repayment.amount
+    if (allConfirmed >= repayment.loan.totalRepay) {
+      await prisma.loanRequest.update({ where: { id: repayment.loanId }, data: { status: 'REPAID' } })
+    }
+
+    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_CONFIRMED', entity: 'loan_repayments', entityId: repaymentId, ip: req.ip })
+    const updated = await prisma.loanRequest.findUnique({ where: { id: repayment.loanId }, include: REPAYMENT_INCLUDE })
+    return reply.send(withComputed(updated!))
+  })
+
+  // ── POST reject repayment ─────────────────────────────────────────────────
+  app.post('/credit/repayments/:repaymentId/reject', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {
+    const { repaymentId } = req.params as { repaymentId: string }
+    const body = z.object({ note: z.string().max(300).optional() }).safeParse(req.body)
+
+    const repayment = await prisma.loanRepayment.findUnique({ where: { id: repaymentId } })
+    if (!repayment) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Remboursement introuvable' } })
+    if (repayment.status !== 'PENDING') return reply.code(409).send({ error: { code: 'INVALID_STATUS', message: 'Déjà traité' } })
+
+    await prisma.loanRepayment.update({
+      where: { id: repaymentId },
+      data: { status: 'REJECTED', cashierId: req.actor.userId, confirmedAt: new Date(), note: body.success && body.data.note ? body.data.note : repayment.note },
+    })
+    await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_REJECTED', entity: 'loan_repayments', entityId: repaymentId, ip: req.ip })
+    return reply.code(204).send()
+  })
+
+  // ── GET pending repayments (cashier inbox) ────────────────────────────────
+  app.get('/credit/pending-repayments', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (_req, reply) => {
+    const repayments = await prisma.loanRepayment.findMany({
+      where: { status: 'PENDING' },
+      include: {
+        loan: {
+          select: {
+            id: true, amount: true, totalRepay: true, dueDate: true,
+            client: { select: { id: true, firstName: true, lastName: true, carnetNumber: true, phone: true } },
+          },
+        },
+        collector: { select: { id: true, firstName: true, lastName: true } },
+        cashier:   { select: { id: true, firstName: true, lastName: true } },
+      },
+      orderBy: { recordedAt: 'asc' },
+    })
+    return reply.send({ data: repayments })
   })
 
   // ── GET single client's loan history (all roles) ──────────────────────────
