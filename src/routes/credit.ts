@@ -156,8 +156,10 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const tier = tiers.find(t => t.months === body.data.durationMonths)
     if (!tier) return reply.code(422).send({ error: { code: 'INVALID_DURATION', message: 'Durée non configurée' } })
 
-    const interest = Math.round(body.data.amount * tier.interestPct / 100)
-    const totalRepay = body.data.amount + interest
+    const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
+    const disbursedAmount = body.data.amount - interestAmount
+    // Client repays only the principal; interest was deducted upfront from disbursement
+    const totalRepay = body.data.amount
 
     const loan = await prisma.loanRequest.create({
       data: {
@@ -166,6 +168,8 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
         amount: body.data.amount,
         durationMonths: body.data.durationMonths,
         interestPct: tier.interestPct,
+        interestAmount,
+        disbursedAmount,
         totalRepay,
         note: body.data.note,
       },

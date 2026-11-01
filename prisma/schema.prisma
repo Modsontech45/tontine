@@ -614,10 +614,12 @@ model LoanRequest {
   id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   clientId       String     @map("client_id") @db.Uuid
   collectorId    String     @map("collector_id") @db.Uuid
-  amount         Int
-  durationMonths Int        @map("duration_months")
-  interestPct    Float      @map("interest_pct")
-  totalRepay     Int        @map("total_repay")
+  amount           Int
+  durationMonths   Int        @map("duration_months")
+  interestPct      Float      @map("interest_pct")
+  interestAmount   Int        @default(0) @map("interest_amount")  // deducted upfront at disbursement
+  disbursedAmount  Int        @default(0) @map("disbursed_amount") // amount - interestAmount, actually handed to client
+  totalRepay       Int        @map("total_repay")                  // = amount (client repays what they borrowed, interest was prepaid)
   status         LoanStatus @default(PENDING)
   note           String?
   requestedAt    DateTime   @default(now()) @map("requested_at") @db.Timestamptz
