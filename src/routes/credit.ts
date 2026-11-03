@@ -13,6 +13,7 @@ const packageSchema = z.object({
   months: z.number().int().min(1),
   interestPct: z.number().min(0).max(100),
   minContributingMonths: z.number().int().min(1).max(24),
+  dailyAmount: z.number().int().min(1),
 })
 
 const updateConfigSchema = z.object({
@@ -88,7 +89,7 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths: number }>
+  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths: number; dailyAmount: number }>
   const eligiblePackages = packages.filter(p => months >= (p.minContributingMonths ?? 1))
   const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
 
@@ -154,10 +155,9 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
 
     const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
-    // Client repays only the principal; interest was deducted upfront from disbursement
     const totalRepay = body.data.amount
-    // Daily installment over 31 days per month, rounded up
-    const dailyAmount = Math.ceil(totalRepay / (body.data.durationMonths * 31))
+    // Use the admin-configured daily amount (rounded by admin for clean collection)
+    const dailyAmount = tier.dailyAmount
 
     const loan = await prisma.loanRequest.create({
       data: {
@@ -288,14 +288,17 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       },
     })
 
-    // Auto-close when fully paid (only for CONFIRMED)
+    // Auto-close when fully paid (only for CONFIRMED); compute contribution credit from round-up
+    let contributionCredit = 0
     if (!isCollector && confirmedPaid + recordedAmount >= loan.totalRepay) {
       await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
+      // If daily amount × days > totalRepay, the difference flows to tontine contribution
+      contributionCredit = change // overpayment the client handed over beyond the loan total
     }
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_RECORDED', entity: 'loan_requests', entityId: id, ip: req.ip })
     const updated = await prisma.loanRequest.findUnique({ where: { id }, include: REPAYMENT_INCLUDE })
-    return reply.code(201).send({ ...withComputed(updated!), change })
+    return reply.code(201).send({ ...withComputed(updated!), change, contributionCredit })
   })
 
   // ── POST confirm repayment (cashier validates field payment) ─────────────
@@ -314,17 +317,18 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       data: { status: 'CONFIRMED', cashierId: req.actor.userId, confirmedAt: new Date() },
     })
 
-    // Check if loan is now fully paid
+    // Check if loan is now fully paid (this repayment is now CONFIRMED)
     const allConfirmed = repayment.loan.repayments
-      .filter(r => r.status === 'CONFIRMED' || r.id === repaymentId)
-      .reduce((s, r) => s + r.amount, 0) + repayment.amount
+      .filter(r => r.id === repaymentId ? true : r.status === 'CONFIRMED')
+      .reduce((s, r) => s + r.amount, 0)
+    const contributionCredit = Math.max(0, allConfirmed - repayment.loan.totalRepay)
     if (allConfirmed >= repayment.loan.totalRepay) {
       await prisma.loanRequest.update({ where: { id: repayment.loanId }, data: { status: 'REPAID' } })
     }
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_CONFIRMED', entity: 'loan_repayments', entityId: repaymentId, ip: req.ip })
     const updated = await prisma.loanRequest.findUnique({ where: { id: repayment.loanId }, include: REPAYMENT_INCLUDE })
-    return reply.send(withComputed(updated!))
+    return reply.send({ ...withComputed(updated!), contributionCredit })
   })
 
   // ── POST reject repayment ─────────────────────────────────────────────────
