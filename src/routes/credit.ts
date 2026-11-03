@@ -8,12 +8,15 @@ import { verifyOtp } from '../lib/otp'
 
 const CONFIG_ID = 'singleton'
 
-const tierSchema = z.object({ months: z.number().int().min(1), interestPct: z.number().min(0).max(100) })
+const packageSchema = z.object({
+  amount: z.number().int().min(1000),
+  months: z.number().int().min(1),
+  interestPct: z.number().min(0).max(100),
+})
 
 const updateConfigSchema = z.object({
   minContributingMonths: z.number().int().min(1).max(24),
-  maxLoanAmount: z.number().int().min(1000),
-  tiers: z.array(tierSchema).min(1).max(6),
+  tiers: z.array(packageSchema).min(1).max(12),
   isEnabled: z.boolean(),
   otp_code: z.string().length(6),
 })
@@ -127,8 +130,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       contributingMonths: result.months,
       requiredMonths: config.minContributingMonths,
       monthsRemaining: result.monthsRemaining,
-      maxLoanAmount: config.maxLoanAmount,
-      tiers: config.tiers,
+      packages: config.tiers,
       isEnabled: config.isEnabled,
       activeLoan: result.activeLoan,
     })
@@ -148,13 +150,9 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(422).send({ error: { code: 'NOT_ELIGIBLE', message: 'Ce client n\'est pas encore éligible au crédit' } })
     }
 
-    if (body.data.amount > config.maxLoanAmount) {
-      return reply.code(422).send({ error: { code: 'AMOUNT_EXCEEDED', message: `Montant maximum: ${config.maxLoanAmount} FCFA` } })
-    }
-
-    const tiers = config.tiers as Array<{ months: number; interestPct: number }>
-    const tier = tiers.find(t => t.months === body.data.durationMonths)
-    if (!tier) return reply.code(422).send({ error: { code: 'INVALID_DURATION', message: 'Durée non configurée' } })
+    const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number }>
+    const tier = packages.find(p => p.amount === body.data.amount && p.months === body.data.durationMonths)
+    if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide' } })
 
     const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
