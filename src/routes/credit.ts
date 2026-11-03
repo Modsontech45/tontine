@@ -12,10 +12,10 @@ const packageSchema = z.object({
   amount: z.number().int().min(1000),
   months: z.number().int().min(1),
   interestPct: z.number().min(0).max(100),
+  minContributingMonths: z.number().int().min(1).max(24),
 })
 
 const updateConfigSchema = z.object({
-  minContributingMonths: z.number().int().min(1).max(24),
   tiers: z.array(packageSchema).min(1).max(12),
   isEnabled: z.boolean(),
   otp_code: z.string().length(6),
@@ -88,10 +88,11 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const eligible = client.status === 'ACTIVE' && months >= config.minContributingMonths && !activeLoan && config.isEnabled
-  const monthsRemaining = Math.max(0, config.minContributingMonths - months)
+  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths: number }>
+  const eligiblePackages = packages.filter(p => months >= (p.minContributingMonths ?? 1))
+  const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
 
-  return { eligible, months, monthsRemaining, activeLoan, client }
+  return { eligible, months, eligiblePackages, activeLoan, client }
 }
 
 export async function creditRoutes(app: FastifyInstance): Promise<void> {
@@ -128,9 +129,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({
       eligible: result.eligible,
       contributingMonths: result.months,
-      requiredMonths: config.minContributingMonths,
-      monthsRemaining: result.monthsRemaining,
-      packages: config.tiers,
+      packages: result.eligiblePackages,
       isEnabled: config.isEnabled,
       activeLoan: result.activeLoan,
     })
@@ -144,15 +143,14 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const config = await getOrCreateConfig()
     if (!config.isEnabled) return reply.code(403).send({ error: { code: 'CREDIT_DISABLED', message: 'Le crédit est désactivé' } })
 
-    const { eligible, activeLoan } = await getEligibility(body.data.clientId, config)
+    const { eligible, activeLoan, eligiblePackages } = await getEligibility(body.data.clientId, config)
     if (!eligible) {
       if (activeLoan) return reply.code(409).send({ error: { code: 'LOAN_ACTIVE', message: 'Ce client a déjà une demande en cours' } })
       return reply.code(422).send({ error: { code: 'NOT_ELIGIBLE', message: 'Ce client n\'est pas encore éligible au crédit' } })
     }
 
-    const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number }>
-    const tier = packages.find(p => p.amount === body.data.amount && p.months === body.data.durationMonths)
-    if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide' } })
+    const tier = eligiblePackages.find(p => p.amount === body.data.amount && p.months === body.data.durationMonths)
+    if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide ou non disponible pour ce client' } })
 
     const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
