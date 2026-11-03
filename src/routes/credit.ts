@@ -160,6 +160,8 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const disbursedAmount = body.data.amount - interestAmount
     // Client repays only the principal; interest was deducted upfront from disbursement
     const totalRepay = body.data.amount
+    // Daily installment over 31 days per month, rounded up
+    const dailyAmount = Math.ceil(totalRepay / (body.data.durationMonths * 31))
 
     const loan = await prisma.loanRequest.create({
       data: {
@@ -171,6 +173,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
         interestAmount,
         disbursedAmount,
         totalRepay,
+        dailyAmount,
         note: body.data.note,
       },
     })
@@ -268,15 +271,19 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
 
     const confirmedPaid = loan.repayments.filter(r => r.status === 'CONFIRMED').reduce((s, r) => s + r.amount, 0)
     const remaining = loan.totalRepay - confirmedPaid
-    if (body.data.amount > remaining) {
-      return reply.code(422).send({ error: { code: 'AMOUNT_EXCEEDED', message: `Montant maximum à rembourser: ${remaining} FCFA` } })
+    if (remaining <= 0) {
+      return reply.code(409).send({ error: { code: 'ALREADY_REPAID', message: 'Ce prêt est déjà entièrement remboursé' } })
     }
+
+    // Allow overpayment — cap the recorded amount at remaining, return change to caller
+    const recordedAmount = Math.min(body.data.amount, remaining)
+    const change = body.data.amount - recordedAmount
 
     const isCollector = req.actor.role === 'COLLECTOR'
     await prisma.loanRepayment.create({
       data: {
         loanId: id,
-        amount: body.data.amount,
+        amount: recordedAmount,
         note: body.data.note,
         status: isCollector ? 'PENDING' : 'CONFIRMED',
         collectorId: isCollector ? req.actor.userId : null,
@@ -285,17 +292,14 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       },
     })
 
-    // Only auto-close when cashier pays directly (CONFIRMED)
-    if (!isCollector) {
-      const newTotal = confirmedPaid + body.data.amount
-      if (newTotal >= loan.totalRepay) {
-        await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
-      }
+    // Auto-close when fully paid (only for CONFIRMED)
+    if (!isCollector && confirmedPaid + recordedAmount >= loan.totalRepay) {
+      await prisma.loanRequest.update({ where: { id }, data: { status: 'REPAID' } })
     }
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'LOAN_REPAYMENT_RECORDED', entity: 'loan_requests', entityId: id, ip: req.ip })
     const updated = await prisma.loanRequest.findUnique({ where: { id }, include: REPAYMENT_INCLUDE })
-    return reply.code(201).send(withComputed(updated!))
+    return reply.code(201).send({ ...withComputed(updated!), change })
   })
 
   // ── POST confirm repayment (cashier validates field payment) ─────────────

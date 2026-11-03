@@ -620,6 +620,7 @@ model LoanRequest {
   interestAmount   Int        @default(0) @map("interest_amount")  // deducted upfront at disbursement
   disbursedAmount  Int        @default(0) @map("disbursed_amount") // amount - interestAmount, actually handed to client
   totalRepay       Int        @map("total_repay")                  // = amount (client repays what they borrowed, interest was prepaid)
+  dailyAmount      Int        @default(0) @map("daily_amount")     // totalRepay / (durationMonths * 31), rounded up
   status         LoanStatus @default(PENDING)
   note           String?
   requestedAt    DateTime   @default(now()) @map("requested_at") @db.Timestamptz
