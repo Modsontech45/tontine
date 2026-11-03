@@ -12,8 +12,8 @@ const packageSchema = z.object({
   amount: z.number().int().min(1000),
   months: z.number().int().min(1),
   interestPct: z.number().min(0).max(100),
-  minContributingMonths: z.number().int().min(1).max(24),
-  dailyAmount: z.number().int().min(1),
+  minContributingMonths: z.number().int().min(1).max(24).default(1),
+  dailyAmount: z.number().int().min(1).optional(),
 })
 
 const updateConfigSchema = z.object({
@@ -89,8 +89,10 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths: number; dailyAmount: number }>
-  const eligiblePackages = packages.filter(p => months >= (p.minContributingMonths ?? 1))
+  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths?: number; dailyAmount?: number }>
+  const eligiblePackages = packages
+    .filter(p => months >= (p.minContributingMonths ?? 1))
+    .map(p => ({ ...p, minContributingMonths: p.minContributingMonths ?? 1, dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / (p.months * 31)) }))
   const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
 
   return { eligible, months, eligiblePackages, activeLoan, client }
@@ -156,8 +158,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
     const totalRepay = body.data.amount
-    // Use the admin-configured daily amount (rounded by admin for clean collection)
-    const dailyAmount = tier.dailyAmount
+    const dailyAmount = tier.dailyAmount ?? Math.ceil(body.data.amount / (body.data.durationMonths * 31))
 
     const loan = await prisma.loanRequest.create({
       data: {
