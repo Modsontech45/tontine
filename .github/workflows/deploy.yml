@@ -1,4 +1,4 @@
-name: Deploy to VPS
+name: Deploy to Production
 
 on:
   push:
@@ -11,14 +11,14 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+          host: 65.109.7.122
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
-            cd /home/tontine/api/apps/api
+            cd /home/tontine/api
             git pull origin main
             npm install --production=false
             npx prisma generate
             npm run build
-            pm2 restart tontine-api || pm2 start dist/index.js --name tontine-api
+            pm2 restart prospera-api
             pm2 save
