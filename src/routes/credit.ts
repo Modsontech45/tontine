@@ -129,9 +129,14 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = req.params as { clientId: string }
     const config = await getOrCreateConfig()
     const result = await getEligibility(clientId, config)
+    const allPkgs = config.tiers as Array<{ minContributingMonths?: number }>
+    const minRequiredMonths = allPkgs.length > 0
+      ? Math.min(...allPkgs.map(p => p.minContributingMonths ?? 1))
+      : 1
     return reply.send({
       eligible: result.eligible,
       contributingMonths: result.months,
+      minRequiredMonths,
       packages: result.eligiblePackages,
       isEnabled: config.isEnabled,
       activeLoan: result.activeLoan,
