@@ -1,7 +1,16 @@
-import { Resend } from 'resend'
+import nodemailer from 'nodemailer'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
-const FROM = (process.env.EMAIL_FROM ?? 'Tontine Prospera <noreply@mail.arenoxempire.com>').replace(/^"|"$/g, '')
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST ?? 'localhost',
+  port: Number(process.env.SMTP_PORT ?? 587),
+  secure: false,
+  auth: process.env.SMTP_USER ? {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  } : undefined,
+})
+
+const FROM = (process.env.EMAIL_FROM ?? 'Prospera <noreply@mail.arenoxempire.com>').replace(/^"|"$/g, '')
 export const ADMIN_EMAIL = process.env.ADMIN_EMAIL
 
 const ROLE_LABELS: Record<string, string> = {
@@ -33,7 +42,7 @@ export async function sendHandoverAlert(opts: {
   const diffColor = difference === 0 ? '#16a34a' : difference < 0 ? '#dc2626' : '#d97706'
   const diffText = difference === 0 ? '✓ Aucun écart' : difference > 0 ? `+${difference.toLocaleString('fr-FR')} F (surplus)` : `${difference.toLocaleString('fr-FR')} F (manquant)`
 
-  await resend.emails.send({
+  await transporter.sendMail({
     from: FROM,
     to: ADMIN_EMAIL,
     subject: `Versement confirmé — ${collectorName} — ${businessDate}`,
@@ -50,7 +59,7 @@ export async function sendHandoverAlert(opts: {
           <tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Confirmé à</td><td style="padding:8px 12px;">${confirmedAt.toLocaleTimeString('fr-FR', { timeZone: 'Africa/Lome' })}</td></tr>
         </table>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
-        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera</p>
+        <p style="color:#9ca3af;font-size:12px;">Prospera</p>
       </div>
     `,
   })
@@ -80,7 +89,7 @@ export async function sendDailySummary(opts: {
     </tr>
   `).join('')
 
-  await resend.emails.send({
+  await transporter.sendMail({
     from: FROM,
     to: ADMIN_EMAIL,
     subject: `Résumé du jour — ${date}`,
@@ -107,7 +116,7 @@ export async function sendDailySummary(opts: {
           <tbody>${handoverRows}</tbody>
         </table>` : '<p style="color:#6b7280;">Aucun versement enregistré aujourd\'hui.</p>'}
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
-        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera — Résumé automatique</p>
+        <p style="color:#9ca3af;font-size:12px;">Prospera — Résumé automatique</p>
       </div>
     `,
   })
@@ -124,7 +133,7 @@ export async function sendOtpEmail(opts: {
   const label = PURPOSE_LABELS[purpose] ?? purpose
   const expiryStr = expiresAt.toLocaleTimeString('fr-FR', { timeZone: 'Africa/Lome', hour: '2-digit', minute: '2-digit' })
 
-  await resend.emails.send({
+  await transporter.sendMail({
     from: FROM,
     to,
     subject: `Code de vérification — ${label}`,
@@ -138,7 +147,7 @@ export async function sendOtpEmail(opts: {
         </div>
         <p style="color:#6b7280;font-size:13px;">Ce code expire à ${expiryStr}. Ne le partagez avec personne.</p>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
-        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera</p>
+        <p style="color:#9ca3af;font-size:12px;">Prospera</p>
       </div>
     `,
   })
@@ -160,10 +169,10 @@ export async function sendNewDeviceAlert(opts: {
     ? `<tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Localisation</td><td style="padding:8px 12px;"><a href="https://www.google.com/maps?q=${lat},${lng}" style="color:#1e40af;">${lat.toFixed(5)}, ${lng.toFixed(5)} (ouvrir)</a></td></tr>`
     : `<tr><td style="padding:8px 12px;color:#6b7280;font-size:14px;">Localisation</td><td style="padding:8px 12px;color:#9ca3af;">Non disponible</td></tr>`
 
-  await resend.emails.send({
+  await transporter.sendMail({
     from: FROM,
     to: ADMIN_EMAIL,
-    subject: `🔴 Nouvel appareil — ${collectorName} — approbation requise`,
+    subject: `Nouvel appareil — ${collectorName} — approbation requise`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
         <div style="background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin-bottom:20px;">
@@ -180,7 +189,7 @@ export async function sendNewDeviceAlert(opts: {
         </table>
         <p style="font-size:14px;color:#374151;">Connectez-vous au tableau de bord pour approuver ou refuser cet appareil.</p>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
-        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera — Sécurité</p>
+        <p style="color:#9ca3af;font-size:12px;">Prospera — Sécurité</p>
       </div>
     `,
   })
@@ -199,13 +208,13 @@ export async function sendWelcomeEmail(opts: {
   const credLabel = pin ? 'PIN mobile' : 'Mot de passe'
   const credValue = pin ?? password ?? ''
 
-  await resend.emails.send({
+  await transporter.sendMail({
     from: FROM,
     to,
     subject: 'Bienvenue sur Tontine Prospera',
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#111;">
-        <h2 style="color:#1e40af;margin-bottom:4px;">Bienvenue sur Tontine Prospera</h2>
+        <h2 style="color:#1e40af;margin-bottom:4px;">Bienvenue sur Prospera</h2>
         <p>Bonjour <strong>${firstName} ${lastName}</strong>,</p>
         <p>Votre compte a été créé avec succès. Voici vos identifiants de connexion :</p>
         <table style="border-collapse:collapse;width:100%;margin:16px 0;background:#f9fafb;border-radius:8px;">
@@ -224,7 +233,7 @@ export async function sendWelcomeEmail(opts: {
         </table>
         <p style="color:#dc2626;font-size:13px;">⚠️ Veuillez changer votre mot de passe après la première connexion.</p>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;" />
-        <p style="color:#9ca3af;font-size:12px;">Tontine Prospera — Système de gestion des tontines</p>
+        <p style="color:#9ca3af;font-size:12px;">Prospera — Système de gestion des tontines</p>
       </div>
     `,
   })

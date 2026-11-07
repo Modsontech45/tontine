@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Ping API
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 https://tontine-dj4l.onrender.com/v1/health || echo "000")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 https://prospera-api.duckdns.org/v1/health || echo "000")
           echo "HTTP status: $STATUS"
           if [ "$STATUS" = "000" ]; then
             echo "Warning: API did not respond (may be cold-starting)"
