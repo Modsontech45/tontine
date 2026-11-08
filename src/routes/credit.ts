@@ -8,10 +8,13 @@ import { verifyOtp } from '../lib/otp'
 
 const CONFIG_ID = 'singleton'
 
+function getInterestPct(months: number): number {
+  return months <= 1 ? 5 : 7.5
+}
+
 const packageSchema = z.object({
   amount: z.number().int().min(1000),
   months: z.number().int().min(1),
-  interestPct: z.number().min(0).max(100),
   minContributingMonths: z.number().int().min(1).max(24).default(1),
   dailyAmount: z.number().int().min(1).optional(),
 })
@@ -89,10 +92,15 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const packages = config.tiers as Array<{ amount: number; months: number; interestPct: number; minContributingMonths?: number; dailyAmount?: number }>
+  const packages = config.tiers as Array<{ amount: number; months: number; minContributingMonths?: number; dailyAmount?: number }>
   const eligiblePackages = packages
     .filter(p => months >= (p.minContributingMonths ?? 1))
-    .map(p => ({ ...p, minContributingMonths: p.minContributingMonths ?? 1, dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / (p.months * 31)) }))
+    .map(p => ({
+      ...p,
+      interestPct: getInterestPct(p.months),
+      minContributingMonths: p.minContributingMonths ?? 1,
+      dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / (p.months * 31)),
+    }))
   const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
 
   return { eligible, months, eligiblePackages, activeLoan, client }
@@ -160,7 +168,8 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const tier = eligiblePackages.find(p => p.amount === body.data.amount && p.months === body.data.durationMonths)
     if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide ou non disponible pour ce client' } })
 
-    const interestAmount = Math.round(body.data.amount * tier.interestPct / 100)
+    const interestPct = getInterestPct(body.data.durationMonths)
+    const interestAmount = Math.round(body.data.amount * interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
     const totalRepay = body.data.amount
     const dailyAmount = tier.dailyAmount ?? Math.ceil(body.data.amount / (body.data.durationMonths * 31))
@@ -171,7 +180,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
         collectorId: req.actor.userId,
         amount: body.data.amount,
         durationMonths: body.data.durationMonths,
-        interestPct: tier.interestPct,
+        interestPct,
         interestAmount,
         disbursedAmount,
         totalRepay,
