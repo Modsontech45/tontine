@@ -14,7 +14,6 @@ function getInterestPct(months: number, shortPct: number, longPct: number): numb
 
 const packageSchema = z.object({
   amount: z.number().int().min(1000),
-  months: z.number().int().min(1),
   minContributingMonths: z.number().int().min(1).max(24).default(1),
   dailyAmount: z.number().int().min(1).optional(),
 })
@@ -94,14 +93,13 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const packages = config.tiers as Array<{ amount: number; months: number; minContributingMonths?: number; dailyAmount?: number }>
+  const packages = config.tiers as Array<{ amount: number; minContributingMonths?: number; dailyAmount?: number }>
   const eligiblePackages = packages
     .filter(p => months >= (p.minContributingMonths ?? 1))
     .map(p => ({
       ...p,
-      interestPct: getInterestPct(p.months, config.interestShortPct, config.interestLongPct),
       minContributingMonths: p.minContributingMonths ?? 1,
-      dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / (p.months * 31)),
+      dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / 31),
     }))
   const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
 
