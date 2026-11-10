@@ -600,8 +600,10 @@ model CreditConfig {
   id                    String   @id @default("singleton")
   minContributingMonths Int      @default(3)    @map("min_contributing_months")
   maxLoanAmount         Int      @default(100000) @map("max_loan_amount")
-  tiers                 Json     @default("[{\"months\":1,\"interestPct\":5},{\"months\":2,\"interestPct\":10},{\"months\":3,\"interestPct\":15}]")
+  tiers                 Json     @default("[{\"amount\":100000,\"months\":1,\"minContributingMonths\":1,\"dailyAmount\":3226},{\"amount\":35000,\"months\":1,\"minContributingMonths\":1,\"dailyAmount\":1130},{\"amount\":20000,\"months\":1,\"minContributingMonths\":1,\"dailyAmount\":645}]")
   isEnabled             Boolean  @default(true) @map("is_enabled")
+  interestShortPct      Float    @default(5)    @map("interest_short_pct")
+  interestLongPct       Float    @default(7.5)  @map("interest_long_pct")
   updatedAt             DateTime @updatedAt      @map("updated_at") @db.Timestamptz
   updatedById           String?  @map("updated_by") @db.Uuid
 

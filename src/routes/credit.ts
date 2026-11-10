@@ -8,8 +8,8 @@ import { verifyOtp } from '../lib/otp'
 
 const CONFIG_ID = 'singleton'
 
-function getInterestPct(months: number): number {
-  return months <= 1 ? 5 : 7.5
+function getInterestPct(months: number, shortPct: number, longPct: number): number {
+  return months <= 1 ? shortPct : longPct
 }
 
 const packageSchema = z.object({
@@ -22,6 +22,8 @@ const packageSchema = z.object({
 const updateConfigSchema = z.object({
   tiers: z.array(packageSchema).min(1).max(12),
   isEnabled: z.boolean(),
+  interestShortPct: z.number().min(0.1).max(50).default(5),
+  interestLongPct: z.number().min(0.1).max(50).default(7.5),
   otp_code: z.string().length(6),
 })
 
@@ -97,7 +99,7 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
     .filter(p => months >= (p.minContributingMonths ?? 1))
     .map(p => ({
       ...p,
-      interestPct: getInterestPct(p.months),
+      interestPct: getInterestPct(p.months, config.interestShortPct, config.interestLongPct),
       minContributingMonths: p.minContributingMonths ?? 1,
       dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / (p.months * 31)),
     }))
@@ -148,6 +150,8 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       packages: result.eligiblePackages,
       isEnabled: config.isEnabled,
       activeLoan: result.activeLoan,
+      interestShortPct: config.interestShortPct,
+      interestLongPct: config.interestLongPct,
     })
   })
 
@@ -165,14 +169,13 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(422).send({ error: { code: 'NOT_ELIGIBLE', message: 'Ce client n\'est pas encore éligible au crédit' } })
     }
 
-    const tier = eligiblePackages.find(p => p.amount === body.data.amount && p.months === body.data.durationMonths)
+    const tier = eligiblePackages.find(p => p.amount === body.data.amount)
     if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide ou non disponible pour ce client' } })
-
-    const interestPct = getInterestPct(body.data.durationMonths)
+    const interestPct = getInterestPct(body.data.durationMonths, config.interestShortPct, config.interestLongPct)
     const interestAmount = Math.round(body.data.amount * interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
     const totalRepay = body.data.amount
-    const dailyAmount = tier.dailyAmount ?? Math.ceil(body.data.amount / (body.data.durationMonths * 31))
+    const dailyAmount = Math.ceil(body.data.amount / (body.data.durationMonths * 31))
 
     const loan = await prisma.loanRequest.create({
       data: {
