@@ -14,6 +14,9 @@ export async function otpRoutes(app: FastifyInstance) {
     if (result === 'no_email') {
       return reply.code(422).send({ error: { code: 'NO_EMAIL', message: 'Aucun email configuré pour ce compte. Contactez un administrateur.' } })
     }
+    if (result === 'email_error') {
+      return reply.code(422).send({ error: { code: 'EMAIL_ERROR', message: 'Échec d\'envoi du code OTP. Vérifiez la configuration email du serveur.' } })
+    }
     return reply.send({ sent: true })
   })
 

@@ -1,7 +1,7 @@
 import { prisma } from './prisma'
 import { sendOtpEmail } from './email'
 
-export async function requestOtp(userId: string, purpose: string): Promise<'sent' | 'no_email'> {
+export async function requestOtp(userId: string, purpose: string): Promise<'sent' | 'no_email' | 'email_error'> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { email: true, firstName: true, lastName: true },
@@ -17,7 +17,12 @@ export async function requestOtp(userId: string, purpose: string): Promise<'sent
     data: { id: crypto.randomUUID(), userId, code, purpose, expiresAt },
   })
 
-  await sendOtpEmail({ to: user.email, firstName: user.firstName, code, purpose, expiresAt })
+  try {
+    await sendOtpEmail({ to: user.email, firstName: user.firstName, code, purpose, expiresAt })
+  } catch (err) {
+    console.error('[OTP] email send failed:', err)
+    return 'email_error'
+  }
   return 'sent'
 }
 
