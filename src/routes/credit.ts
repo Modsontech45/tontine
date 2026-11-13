@@ -72,12 +72,14 @@ async function getOrCreateConfig() {
 }
 
 async function getEligibility(clientId: string, config: Awaited<ReturnType<typeof getOrCreateConfig>>) {
-  const [client, cycles, activeLoan] = await Promise.all([
+  const [client, latestCycle, cycleCount, activeLoan] = await Promise.all([
     prisma.client.findUnique({ where: { id: clientId }, select: { id: true, status: true, firstName: true, lastName: true, carnetNumber: true } }),
-    prisma.cycle.findMany({
+    prisma.cycle.findFirst({
       where: { clientId, status: { not: 'CANCELLED' } },
+      orderBy: { startDate: 'desc' },
       select: { stakeAmount: true, maxBoxes: true },
     }),
+    prisma.cycle.count({ where: { clientId, status: { not: 'CANCELLED' } } }),
     prisma.loanRequest.findFirst({
       where: { clientId, status: { in: ['PENDING', 'APPROVED'] } },
       select: { id: true, status: true, amount: true, requestedAt: true },
@@ -86,11 +88,9 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
 
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
-  const months = cycles.length
-  // Max loan = highest cycle's (stakeAmount × maxBoxes) — the full monthly contribution potential
-  const maxLoanAmount = cycles.length > 0
-    ? Math.max(...cycles.map(c => c.stakeAmount * c.maxBoxes))
-    : 0
+  const months = cycleCount
+  // Max loan = most recent cycle's stakeAmount × maxBoxes
+  const maxLoanAmount = latestCycle ? latestCycle.stakeAmount * latestCycle.maxBoxes : 0
 
   const minLoanAmount = config.minLoanAmount ?? 5000
   const minMonths = config.minContributingMonths ?? 1
