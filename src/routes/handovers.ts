@@ -129,7 +129,12 @@ export async function handoverRoutes(app: FastifyInstance) {
       return reply.code(422).send({ error: { code: 'NO_COLLECTIONS', message: 'Aucun encaissement trouvé pour ce collecteur à cette date' } })
     }
 
-    const difference = received_amount - expectedAmount
+    // If a confirmed handover already exists, add the new amount to the previously received total
+    const existing = await prisma.cashHandover.findUnique({
+      where: { collectorId_businessDate: { collectorId: collector_id, businessDate: date } },
+    })
+    const totalReceived = existing ? existing.receivedAmount + received_amount : received_amount
+    const difference = totalReceived - expectedAmount
 
     const handover = await prisma.cashHandover.upsert({
       where: { collectorId_businessDate: { collectorId: collector_id, businessDate: date } },
@@ -147,7 +152,7 @@ export async function handoverRoutes(app: FastifyInstance) {
         notes: notes ?? null,
       },
       update: {
-        receivedAmount: received_amount,
+        receivedAmount: totalReceived,
         difference,
         expectedAmount,
         collectionsCount,
