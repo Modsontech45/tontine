@@ -289,11 +289,16 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(409).send({ error: { code: 'ALREADY_REPAID', message: 'Ce prêt est déjà entièrement remboursé' } })
     }
 
+    // Collectors must wait for the pending repayment to be confirmed before recording another
+    const isCollector = req.actor.role === 'COLLECTOR'
+    if (isCollector && loan.repayments.some(r => r.status === 'PENDING')) {
+      return reply.code(409).send({ error: { code: 'PENDING_REPAYMENT', message: 'Un remboursement est en attente de confirmation. Faites approuver le précédent avant d\'en enregistrer un nouveau.' } })
+    }
+
     // Allow overpayment — cap the recorded amount at remaining, return change to caller
     const recordedAmount = Math.min(body.data.amount, remaining)
     const change = body.data.amount - recordedAmount
 
-    const isCollector = req.actor.role === 'COLLECTOR'
     await prisma.loanRepayment.create({
       data: {
         loanId: id,
