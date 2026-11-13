@@ -97,6 +97,8 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
     ? Math.max(...monthlyTotals.values())
     : 0
 
+  console.log(`[eligibility] client=${clientId} collections=${collections.length} months=${months} maxLoan=${maxLoanAmount}`)
+
   const minLoanAmount = config.minLoanAmount ?? 5000
   const minMonths = config.minContributingMonths ?? 1
   const eligible = client.status === 'ACTIVE'
