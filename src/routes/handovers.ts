@@ -133,7 +133,7 @@ export async function handoverRoutes(app: FastifyInstance) {
     const existing = await prisma.cashHandover.findUnique({
       where: { collectorId_businessDate: { collectorId: collector_id, businessDate: date } },
     })
-    const totalReceived = existing ? existing.receivedAmount + received_amount : received_amount
+    const totalReceived = existing ? (existing.receivedAmount ?? 0) + received_amount : received_amount
     const difference = totalReceived - expectedAmount
 
     const handover = await prisma.cashHandover.upsert({
