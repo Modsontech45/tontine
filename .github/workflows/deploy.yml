@@ -15,10 +15,11 @@ jobs:
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            git config --global --add safe.directory /home/tontine/api
             cd /home/tontine/api
             git pull origin main
             npm install --production=false
             npx prisma generate
+            npx prisma migrate deploy
             npm run build
-            pm2 restart prospera-api
-            pm2 save
+            su -c "pm2 restart prospera-api && pm2 save" tontine
