@@ -72,35 +72,33 @@ async function getOrCreateConfig() {
 }
 
 async function getEligibility(clientId: string, config: Awaited<ReturnType<typeof getOrCreateConfig>>) {
-  const [client, contributingMonths, activeLoan, maxMonthly] = await Promise.all([
+  const [client, collections, activeLoan] = await Promise.all([
     prisma.client.findUnique({ where: { id: clientId }, select: { id: true, status: true, firstName: true, lastName: true, carnetNumber: true } }),
-    prisma.$queryRaw<[{ months: number }]>`
-      SELECT COUNT(DISTINCT DATE_TRUNC('month', business_date))::int AS months
-      FROM collections
-      WHERE client_id = ${clientId}::uuid AND voided_at IS NULL
-    `,
+    prisma.collection.findMany({
+      where: { clientId, voidedAt: null },
+      select: { amount: true, businessDate: true },
+    }),
     prisma.loanRequest.findFirst({
       where: { clientId, status: { in: ['PENDING', 'APPROVED'] } },
       select: { id: true, status: true, amount: true, requestedAt: true },
     }),
-    prisma.$queryRaw<[{ max_monthly: number }]>`
-      SELECT COALESCE(MAX(monthly_total), 0)::int AS max_monthly
-      FROM (
-        SELECT DATE_TRUNC('month', business_date) AS month, SUM(amount)::int AS monthly_total
-        FROM collections
-        WHERE client_id = ${clientId}::uuid AND voided_at IS NULL
-        GROUP BY DATE_TRUNC('month', business_date)
-      ) monthly
-    `,
   ])
 
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
-  const months = contributingMonths[0]?.months ?? 0
+  // Group collections by month (YYYY-MM) and find the highest monthly total
+  const monthlyTotals = new Map<string, number>()
+  for (const c of collections) {
+    const key = c.businessDate.toISOString().slice(0, 7)
+    monthlyTotals.set(key, (monthlyTotals.get(key) ?? 0) + c.amount)
+  }
+  const months = monthlyTotals.size
+  const maxLoanAmount = monthlyTotals.size > 0
+    ? Math.max(...monthlyTotals.values())
+    : 0
+
   const minLoanAmount = config.minLoanAmount ?? 5000
   const minMonths = config.minContributingMonths ?? 1
-  // Max loan = highest monthly contribution total from actual collection records
-  const maxLoanAmount = Number(maxMonthly[0]?.max_monthly ?? 0)
   const eligible = client.status === 'ACTIVE'
     && !activeLoan
     && config.isEnabled
