@@ -12,23 +12,18 @@ function getInterestPct(months: number, shortPct: number, longPct: number): numb
   return months <= 1 ? shortPct : longPct
 }
 
-const packageSchema = z.object({
-  amount: z.number().int().min(1000),
-  minContributingMonths: z.number().int().min(1).max(24).default(1),
-  dailyAmount: z.number().int().min(1).optional(),
-})
-
 const updateConfigSchema = z.object({
-  tiers: z.array(packageSchema).min(1).max(12),
   isEnabled: z.boolean(),
   interestShortPct: z.number().min(0.1).max(50).default(5),
   interestLongPct: z.number().min(0.1).max(50).default(7.5),
+  minLoanAmount: z.number().int().min(1000).default(5000),
+  minContributingMonths: z.number().int().min(0).max(24).default(1),
   otp_code: z.string().length(6),
 })
 
 const requestLoanSchema = z.object({
   clientId: z.string().uuid(),
-  amount: z.number().int().min(1000),
+  amount: z.number().int().min(1),
   durationMonths: z.number().int().min(1),
   note: z.string().max(500).optional(),
 })
@@ -77,7 +72,7 @@ async function getOrCreateConfig() {
 }
 
 async function getEligibility(clientId: string, config: Awaited<ReturnType<typeof getOrCreateConfig>>) {
-  const [client, contributingMonths, activeLoan] = await Promise.all([
+  const [client, contributingMonths, activeLoan, latestCycle] = await Promise.all([
     prisma.client.findUnique({ where: { id: clientId }, select: { id: true, status: true, firstName: true, lastName: true, carnetNumber: true } }),
     prisma.$queryRaw<[{ months: number }]>`
       SELECT COUNT(DISTINCT DATE_TRUNC('month', business_date))::int AS months
@@ -88,29 +83,40 @@ async function getEligibility(clientId: string, config: Awaited<ReturnType<typeo
       where: { clientId, status: { in: ['PENDING', 'APPROVED'] } },
       select: { id: true, status: true, amount: true, requestedAt: true },
     }),
+    prisma.cycle.findFirst({
+      where: { clientId, status: { in: ['OPEN', 'CLOSED', 'PAID'] } },
+      orderBy: { createdAt: 'desc' },
+      select: { stakeAmount: true },
+    }),
   ])
 
   if (!client) throw new AppError('NOT_FOUND', 'Client introuvable', 404)
 
   const months = contributingMonths[0]?.months ?? 0
-  const packages = config.tiers as Array<{ amount: number; minContributingMonths?: number; dailyAmount?: number }>
-  const eligiblePackages = packages
-    .filter(p => months >= (p.minContributingMonths ?? 1))
-    .map(p => ({
-      ...p,
-      minContributingMonths: p.minContributingMonths ?? 1,
-      dailyAmount: p.dailyAmount ?? Math.ceil(p.amount / 31),
-    }))
-  const eligible = client.status === 'ACTIVE' && !activeLoan && config.isEnabled && eligiblePackages.length > 0
+  const minLoanAmount = config.minLoanAmount ?? 5000
+  const minMonths = config.minContributingMonths ?? 1
+  // Max loan = daily stake × 31 days (one month's contribution)
+  const maxLoanAmount = latestCycle ? latestCycle.stakeAmount * 31 : 0
+  const eligible = client.status === 'ACTIVE'
+    && !activeLoan
+    && config.isEnabled
+    && months >= minMonths
+    && maxLoanAmount >= minLoanAmount
 
-  return { eligible, months, eligiblePackages, activeLoan, client }
+  return { eligible, months, minLoanAmount, maxLoanAmount, activeLoan, client }
 }
 
 export async function creditRoutes(app: FastifyInstance): Promise<void> {
   // ── GET config (all authenticated, not cashier) ───────────────────────────
   app.get('/credit/config', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CONTROLLER', 'COLLECTOR') }, async (_req, reply) => {
     const config = await getOrCreateConfig()
-    return reply.send(config)
+    return reply.send({
+      isEnabled: config.isEnabled,
+      interestShortPct: config.interestShortPct,
+      interestLongPct: config.interestLongPct,
+      minLoanAmount: config.minLoanAmount,
+      minContributingMonths: config.minContributingMonths,
+    })
   })
 
   // ── PUT config (admin only) ───────────────────────────────────────────────
@@ -129,7 +135,7 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     })
 
     await writeAudit({ actorId: req.actor.userId, actorRole: req.actor.role, action: 'UPDATE_CREDIT_CONFIG', entity: 'credit_config', ip: req.ip })
-    return reply.send(config)
+    return reply.send({ isEnabled: config.isEnabled, interestShortPct: config.interestShortPct, interestLongPct: config.interestLongPct, minLoanAmount: config.minLoanAmount, minContributingMonths: config.minContributingMonths })
   })
 
   // ── GET eligibility for a client ─────────────────────────────────────────
@@ -137,15 +143,12 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const { clientId } = req.params as { clientId: string }
     const config = await getOrCreateConfig()
     const result = await getEligibility(clientId, config)
-    const allPkgs = config.tiers as Array<{ minContributingMonths?: number }>
-    const minRequiredMonths = allPkgs.length > 0
-      ? Math.min(...allPkgs.map(p => p.minContributingMonths ?? 1))
-      : 1
     return reply.send({
       eligible: result.eligible,
       contributingMonths: result.months,
-      minRequiredMonths,
-      packages: result.eligiblePackages,
+      minRequiredMonths: config.minContributingMonths ?? 1,
+      minLoanAmount: result.minLoanAmount,
+      maxLoanAmount: result.maxLoanAmount,
       isEnabled: config.isEnabled,
       activeLoan: result.activeLoan,
       interestShortPct: config.interestShortPct,
@@ -161,14 +164,16 @@ export async function creditRoutes(app: FastifyInstance): Promise<void> {
     const config = await getOrCreateConfig()
     if (!config.isEnabled) return reply.code(403).send({ error: { code: 'CREDIT_DISABLED', message: 'Le crédit est désactivé' } })
 
-    const { eligible, activeLoan, eligiblePackages } = await getEligibility(body.data.clientId, config)
+    const { eligible, activeLoan, minLoanAmount, maxLoanAmount } = await getEligibility(body.data.clientId, config)
     if (!eligible) {
       if (activeLoan) return reply.code(409).send({ error: { code: 'LOAN_ACTIVE', message: 'Ce client a déjà une demande en cours' } })
       return reply.code(422).send({ error: { code: 'NOT_ELIGIBLE', message: 'Ce client n\'est pas encore éligible au crédit' } })
     }
 
-    const tier = eligiblePackages.find(p => p.amount === body.data.amount)
-    if (!tier) return reply.code(422).send({ error: { code: 'INVALID_PACKAGE', message: 'Package de crédit invalide ou non disponible pour ce client' } })
+    if (body.data.amount < minLoanAmount || body.data.amount > maxLoanAmount) {
+      return reply.code(422).send({ error: { code: 'INVALID_AMOUNT', message: `Le montant doit être compris entre ${minLoanAmount} et ${maxLoanAmount} FCFA` } })
+    }
+
     const interestPct = getInterestPct(body.data.durationMonths, config.interestShortPct, config.interestLongPct)
     const interestAmount = Math.round(body.data.amount * interestPct / 100)
     const disbursedAmount = body.data.amount - interestAmount
