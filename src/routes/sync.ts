@@ -288,6 +288,9 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       accepted.void_requests.push(v.id)
     }
 
+    if (rejected.length > 0) {
+      console.log('[sync/push] rejections for', req.actor.userId, JSON.stringify(rejected))
+    }
     return reply.send({ accepted, rejected, carnet_assignments: carnetAssignments, server_now: serverNow.toISOString() })
   })
 
