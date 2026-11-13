@@ -175,7 +175,15 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const openCycle = await prisma.cycle.findFirst({ where: { clientId: c.client_id, status: 'OPEN', NOT: { id: c.id } } })
-      if (openCycle) { rejected.push({ entity: 'cycle', id: c.id, code: 'ONE_OPEN_CYCLE', message: 'Ce client a déjà un cycle ouvert' }); continue }
+      if (openCycle) {
+        const remaining = openCycle.maxBoxes * openCycle.stakeAmount - openCycle.totalPaid
+        if (remaining <= 0) {
+          // Old cycle is complete — close it automatically so the new one can be accepted
+          await prisma.cycle.update({ where: { id: openCycle.id }, data: { status: 'CLOSED', closedAt: new Date() } })
+        } else {
+          rejected.push({ entity: 'cycle', id: c.id, code: 'ONE_OPEN_CYCLE', message: 'Ce client a déjà un cycle ouvert' }); continue
+        }
+      }
 
       try {
         await prisma.cycle.upsert({

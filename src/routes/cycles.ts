@@ -63,10 +63,16 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: 'end_date must be after start_date' } })
     }
 
-    // Check for existing OPEN cycle (enforced by DB unique index too)
+    // Check for existing OPEN cycle
     const openCycle = await prisma.cycle.findFirst({ where: { clientId, status: 'OPEN' } })
     if (openCycle) {
-      return reply.code(422).send({ error: { code: 'ONE_OPEN_CYCLE', message: 'Ce client a déjà un cycle ouvert' } })
+      const remaining = openCycle.maxBoxes * openCycle.stakeAmount - openCycle.totalPaid
+      if (remaining <= 0) {
+        // Old cycle is complete — close it automatically
+        await prisma.cycle.update({ where: { id: openCycle.id }, data: { status: 'CLOSED', closedAt: new Date() } })
+      } else {
+        return reply.code(422).send({ error: { code: 'ONE_OPEN_CYCLE', message: 'Ce client a déjà un cycle ouvert' } })
+      }
     }
 
     const lastCycle = await prisma.cycle.findFirst({ where: { clientId }, orderBy: { cycleSequence: 'desc' } })
