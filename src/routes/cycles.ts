@@ -138,6 +138,50 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(closed)
   })
 
+  app.post('/cycles/:id/payout', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN', 'CASHIER') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = z.object({
+      carnet_verified: z.boolean(),
+      notes: z.string().optional(),
+    }).safeParse(req.body)
+    if (!body.success) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: body.error.message } })
+    if (!body.data.carnet_verified) return reply.code(422).send({ error: { code: 'CARNET_NOT_VERIFIED', message: 'Veuillez confirmer la vérification du carnet' } })
+
+    const cycle = await prisma.cycle.findUnique({ where: { id }, include: { client: true } })
+    if (!cycle) return reply.code(404).send({ error: notFound('Cycle', id) })
+    if (cycle.status !== 'CLOSED') return reply.code(422).send({ error: { code: 'CYCLE_NOT_CLOSED', message: 'Le cycle doit être clôturé avant le remboursement' } })
+
+    const existing = await prisma.payout.findUnique({ where: { cycleId: id } })
+    if (existing) return reply.code(409).send({ error: { code: 'ALREADY_PAID', message: 'Ce cycle a déjà été remboursé' } })
+
+    const netPaid = cycle.netToPay ?? (cycle.totalPaid - (cycle.commissionAmount ?? 0))
+
+    const [payout] = await prisma.$transaction([
+      prisma.payout.create({
+        data: {
+          cycleId: id,
+          clientId: cycle.clientId,
+          totalPaid: cycle.totalPaid,
+          commissionAmount: cycle.commissionAmount ?? 0,
+          netPaid,
+          carnetVerified: true,
+          cashierId: req.actor.userId,
+          paidAt: new Date(),
+          notes: body.data.notes ?? null,
+        },
+      }),
+      prisma.cycle.update({ where: { id }, data: { status: 'PAID' } }),
+    ])
+
+    await writeAudit({
+      actorId: req.actor.userId, actorRole: req.actor.role,
+      action: 'RECORD_PAYOUT', entity: 'payouts', entityId: payout.id,
+      after: { cycleId: id, netPaid, commissionAmount: cycle.commissionAmount }, ip: req.ip,
+    })
+
+    return reply.code(201).send(payout)
+  })
+
   app.post('/cycles/:id/cancel', { preHandler: requireRoles('SUPER_ADMIN', 'ADMIN') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const body = cancelSchema.safeParse(req.body)
